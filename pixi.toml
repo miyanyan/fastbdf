@@ -13,3 +13,18 @@ configure = "cmake --preset dev"
 build = { cmd = "cmake --build --preset dev", depends-on = ["configure"] }
 test = { cmd = "ctest --preset dev", depends-on = ["build"] }
 bench = { cmd = "ctest --preset bench", depends-on = ["build"] }
+
+[feature.mne.dependencies]
+python = "3.12.*"
+mne-base = ">=1.9,<2"
+edfio = ">=0.4,<1"
+numpy = ">=1.26,<3"
+
+[feature.mne.tasks]
+configure-mne = "cmake --preset mne"
+build-mne = { cmd = "cmake --build --preset mne", depends-on = ["configure-mne"] }
+test-mne = { cmd = "ctest --preset mne", depends-on = ["build-mne"] }
+bench-mne = { cmd = "ctest --preset mne-bench", depends-on = ["build-mne"] }
+
+[environments]
+mne = { features = ["mne"] }

@@ -11,10 +11,18 @@
         "FASTBDF_INTEROP": "ON",
         "VCPKG_MANIFEST_FEATURES": "interop"
       }
-    }
+    },
+    {"name": "mne", "binaryDir": "${sourceDir}/build/mne",
+     "cacheVariables": {"CMAKE_BUILD_TYPE": "Release", "FASTBDF_MNE": "ON",
+                        "Python3_ROOT_DIR": "$env{CONDA_PREFIX}"}}
   ],
-  "buildPresets": [{"name": "dev", "configurePreset": "dev", "configuration": "Release"}],
+  "buildPresets": [{"name": "dev", "configurePreset": "dev", "configuration": "Release"},
+                   {"name": "mne", "configurePreset": "mne", "configuration": "Release"}],
   "testPresets": [
+    {"name": "mne", "configurePreset": "mne", "configuration": "Release",
+     "filter": {"include": {"name": "^mne_compare$"}}, "output": {"outputOnFailure": true}},
+    {"name": "mne-bench", "configurePreset": "mne", "configuration": "Release",
+     "filter": {"include": {"name": "^mne_bench$"}}, "output": {"verbosity": "verbose"}},
     {"name": "dev", "configurePreset": "dev", "configuration": "Release",
      "filter": {"exclude": {"label": "benchmark"}}, "output": {"outputOnFailure": true}},
     {"name": "bench", "configurePreset": "dev", "configuration": "Release",

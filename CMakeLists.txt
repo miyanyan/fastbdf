@@ -22,7 +22,8 @@ install(FILES "${CMAKE_CURRENT_BINARY_DIR}/fastbdfConfigVersion.cmake"
 
 option(FASTBDF_TESTS "Build the native tests" OFF)
 option(FASTBDF_INTEROP "Build EDFlib interoperability tests and benchmark" OFF)
-if(FASTBDF_TESTS OR FASTBDF_INTEROP)
+option(FASTBDF_MNE "Build optional MNE-Python comparison and benchmark" OFF)
+if(FASTBDF_TESTS OR FASTBDF_INTEROP OR FASTBDF_MNE)
     enable_testing()
 endif()
 if(FASTBDF_TESTS)
@@ -45,4 +46,15 @@ if(FASTBDF_INTEROP)
     set_tests_properties(bench PROPERTIES LABELS benchmark)
 endif()
 
-
+if(FASTBDF_MNE)
+    find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    foreach(target IN ITEMS mne_probe mne_bench)
+        add_executable(fastbdf_${target} tests/${target}.cpp)
+        target_link_libraries(fastbdf_${target} PRIVATE fastbdf::fastbdf)
+    endforeach()
+    add_test(NAME mne_compare COMMAND Python3::Interpreter
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/mne_compare.py" $<TARGET_FILE:fastbdf_mne_probe>)
+    add_test(NAME mne_bench COMMAND Python3::Interpreter
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/mne_bench.py" $<TARGET_FILE:fastbdf_mne_bench>)
+    set_tests_properties(mne_bench PROPERTIES LABELS benchmark)
+endif()

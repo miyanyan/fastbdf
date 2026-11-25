@@ -28,3 +28,17 @@ jobs:
       - run: cmake --preset dev
       - run: cmake --build --preset dev --parallel 2
       - run: ctest --preset dev
+
+  mne:
+    strategy:
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: prefix-dev/setup-pixi@82d477f15f3a381dbcc8adc1206ce643fe110fb7 # v0.9.3
+        with:
+          pixi-version: v0.76.2
+          environments: mne
+          locked: true
+      - run: pixi run --locked -e mne test-mne

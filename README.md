@@ -90,6 +90,19 @@ EDFlib 的 `*_hr` 注释写函数接收微秒，旧函数接收 100 微秒单位
 - 写入事件允许制表符、换行和回车，拒绝其他 ASCII 控制字符。结构化患者和记录字段中的附加说明保留原有下划线及内部空格。
 - 有波形通道的文件必须写完至少一条记录才能成功 `finish()`。可在补齐后重试。
 
+## 与 MNE-Python 对照
+
+正确性测试读取 fastbdf 生成的 EDF、BDF、EDF+ 和 BDF+，逐通道核对采样率、样本数、物理量和读取窗口，并比较 Plus 文件的事件文本、起点和持续时间。反向测试用 MNE 和 edfio 导出 EDF，再由 fastbdf 读取，并按 EDF 的量化精度与原始浮点信号比较。
+
+MNE 默认将电压信号换算为伏特，fastbdf 保留通道头部的单位。对照时统一换算为伏特。混合采样率文件按通道单独交给 MNE 打开，以保留各自的原始采样点。[MNE EDF 读取接口](https://mne.tools/stable/generated/mne.io.read_raw_edf.html) · [MNE BDF 读取接口](https://mne.tools/stable/generated/mne.io.read_raw_bdf.html)
+
+```sh
+pixi run --locked -e mne test-mne
+pixi run --locked -e mne bench-mne
+```
+
+Windows 和 Ubuntu CI 运行正确性测试。性能测试在本机单独运行，比较同采样率的连续 EDF+ 与 BDF+。两端都计入打开文件、读取注释、分配并读取全部通道的 float64 样本、换算为伏特和关闭文件。每种格式预热一次，取 5 次的中位数；进程启动、Python 导入、生成文件和逐点核对均在计时外。
+
 ## 开发与验证
 
 安装 Pixi、C++20 编译器和已 bootstrap 的 vcpkg，设置 `VCPKG_ROOT`。Windows 使用带 C++ 桌面开发组件的 Visual Studio，Linux 可用 GCC。Pixi 锁定开发工具，vcpkg manifest 的 `interop` feature 提供 EDFlib 1.27。
