@@ -1,5 +1,6 @@
 #pragma once
 #include "detail/file_source.hpp"
+#include "text.hpp"
 #include "types.hpp"
 #include <algorithm>
 #include <array>
@@ -100,8 +101,7 @@ class Reader {
         if (digits < 7) {
           fraction = fraction * 10 + d;
           ++digits;
-        } else if (d)
-          throw Error("Time precision exceeds 100 ns");
+        } // EDFlib truncates sub-tick fractional digits toward zero.
       }
     }
     if (!any || p != t.size())
@@ -163,12 +163,15 @@ class Reader {
       throw Error("Reader is not open");
     file_->read_at(offset, out);
   }
-  static bool utf8(std::string_view s) {
+  static bool valid_annotation_text(std::string_view s) {
     std::size_t i = 0;
     while (i < s.size()) {
       auto c = static_cast<unsigned char>(s[i++]);
-      if (c < 0x80)
+      if (c < 0x80) {
+        if (!detail::allowed_annotation_byte(c))
+          return false;
         continue;
+      }
       unsigned n;
       std::uint32_t cp;
       if (c >= 0xc2 && c <= 0xdf) {
@@ -197,21 +200,20 @@ class Reader {
     }
     return true;
   }
-  static std::vector<std::string> words(std::string_view s) {
-    std::vector<std::string> result;
-    std::size_t p = 0;
-    while (p < s.size()) {
-      while (p < s.size() && s[p] == ' ')
-        ++p;
-      if (p == s.size())
-        break;
-      auto e = s.find(' ', p);
-      if (e == s.npos)
-        e = s.size();
-      result.emplace_back(s.substr(p, e - p));
-      p = e;
+  // Only the required prefix fields use underscores and space delimiters.
+  // The remainder is free text; consume exactly one separator before it.
+  template <std::size_t Count>
+  static std::array<std::string, Count>
+  identification_fields(std::string_view &tail) {
+    std::array<std::string, Count> fields;
+    for (auto &field : fields) {
+      if (tail.empty() || tail.front() == ' ')
+        throw Error("Missing EDF+ identification field");
+      const auto end = tail.find(' ');
+      field = tail.substr(0, end);
+      tail.remove_prefix(end == tail.npos ? tail.size() : end + 1);
     }
-    return result;
+    return fields;
   }
   static std::string decoded(std::string s) {
     if (s == "X")
@@ -224,9 +226,11 @@ class Reader {
     info_.recording = raw_recording_;
     if (info_.format != Format::edf_plus && info_.format != Format::bdf_plus)
       return;
-    auto p = words(raw_patient_);
-    auto r = words(raw_recording_);
-    if (p.size() < 4 || r.size() < 5 || r[0] != "Startdate")
+    std::string_view patient_tail = raw_patient_,
+                     recording_tail = raw_recording_;
+    auto p = identification_fields<4>(patient_tail);
+    auto r = identification_fields<5>(recording_tail);
+    if (r[0] != "Startdate")
       throw Error("Invalid EDF+ identification fields");
     info_.patient_code = decoded(p[0]);
     info_.sex = decoded(p[1]);
@@ -257,19 +261,11 @@ class Reader {
       info_.birthdate = b.substr(7) + "-" + (month < 10 ? "0" : "") +
                         std::to_string(month) + "-" + b.substr(0, 2);
     }
-    for (std::size_t i = 4; i < p.size(); ++i) {
-      if (i > 4)
-        info_.patient_additional += ' ';
-      info_.patient_additional += decoded(p[i]);
-    }
+    info_.patient_additional = patient_tail;
     info_.admin_code = decoded(r[2]);
     info_.technician = decoded(r[3]);
     info_.equipment = decoded(r[4]);
-    for (std::size_t i = 5; i < r.size(); ++i) {
-      if (i > 5)
-        info_.recording_additional += ' ';
-      info_.recording_additional += decoded(r[i]);
-    }
+    info_.recording_additional = recording_tail;
     // EDF+ uses the unambiguous four-digit date in the recording field.
     if (r[1] != "X") {
       static constexpr std::array<std::string_view, 12> months = {
@@ -300,6 +296,23 @@ class Reader {
       info_.start = std::chrono::local_days{date} + tod;
     }
   }
+  static Tick tal_time(std::string_view text, bool is_duration) {
+    auto digits = text;
+    if (!is_duration) {
+      if (digits.empty() || (digits.front() != '+' && digits.front() != '-'))
+        throw Error("Invalid annotation onset");
+      digits.remove_prefix(1);
+    }
+    const auto dot = digits.find('.');
+    if (digits.empty() || digits.front() == '.' || digits.back() == '.' ||
+        (dot != digits.npos && digits.find('.', dot + 1) != digits.npos) ||
+        digits.find_first_not_of("0123456789.") != digits.npos)
+      throw Error("Invalid TAL time");
+    // EDFlib 1.27 validates the full duration, then copies 15 characters
+    // before converting it to ticks. Onsets use the complete spelling.
+    return ticks(is_duration ? text.substr(0, 15) : text, "TAL time");
+  }
+
   // TAL bytes are stored consecutively, including all bytes of 16/24 bit words.
   bool parse_tals(std::span<const char> bytes, std::uint64_t,
                   bool first_channel, AnnotationMode mode) const {
@@ -320,18 +333,16 @@ class Reader {
       std::string_view tal(bytes.data() + begin, p - begin);
       ++p;
       auto sep = tal.find_first_of("\x14\x15");
-      if (sep == tal.npos || tal.empty() || (tal[0] != '+' && tal[0] != '-'))
+      if (sep == tal.npos)
         throw Error("Invalid annotation onset");
-      auto onset = ticks(tal.substr(0, sep), "annotation onset");
+      auto onset = tal_time(tal.substr(0, sep), false);
       std::optional<Tick> duration;
       auto q = sep;
       if (tal[q] == '\x15') {
         auto e = tal.find('\x14', q + 1);
         if (e == tal.npos)
           throw Error("Invalid annotation duration");
-        duration = ticks(tal.substr(q + 1, e - q - 1), "annotation duration");
-        if (duration->count() < 0)
-          throw Error("Negative annotation duration");
+        duration = tal_time(tal.substr(q + 1, e - q - 1), true);
         q = e;
       }
       if (first && first_channel) {
@@ -340,26 +351,28 @@ class Reader {
         current_record_onset_ = onset;
         if (mode == AnnotationMode::none)
           return false;
+        // Skip just the first empty description reserved for record
+        // timekeeping. Subsequent descriptions in the same TAL may themselves
+        // be events.
+        ++q;
       }
       first = false;
-      while (q < tal.size()) {
+      while (q + 1 < tal.size()) {
         if (tal[q] != '\x14')
           throw Error("Invalid annotation separator");
         auto e = tal.find('\x14', q + 1);
         if (e == tal.npos)
           throw Error("Unterminated annotation text");
         auto text = tal.substr(q + 1, e - q - 1);
-        if (!text.empty() && mode != AnnotationMode::none) {
-          if (!utf8(text))
-            throw Error("Invalid annotation UTF-8");
+        if (mode != AnnotationMode::none) {
+          if (!valid_annotation_text(text))
+            throw Error("Invalid annotation text");
           annotations_.push_back({onset, duration, std::string(text)});
           if (mode == AnnotationMode::until_recording_ends &&
               text.starts_with("Recording ends"))
             return true;
         }
         q = e;
-        if (q + 1 == tal.size())
-          break;
       }
     }
     if (first && first_channel)

@@ -81,6 +81,15 @@ writer.finish();
 
 EDFlib 的 `*_hr` 注释写函数接收微秒，旧函数接收 100 微秒单位，迁移时使用相应的 `std::chrono::duration` 转换。EDFlib 用户从原生 C++ 接口迁移，本项目不导出其 C ABI。
 
+### 与 EDFlib 1.27 交换文件
+
+双向测试覆盖连续 EDF+ 和 BDF+。测试用 EDFlib 生成文件，由 fastbdf 读取实际头部、样本和事件并重新生成文件，最后由 EDFlib 打开并核对。经典 EDF、BDF 可以由 fastbdf 生成后交给 EDFlib 读取；EDFlib 的写接口只生成 Plus 格式。
+
+- 空描述事件保留起点、时长和顺序。每条记录开头专门用于计时的空描述不会计入事件数。
+- 事件时间的小数部分按 100 ns 向零截断。EDFlib 读取持续时间时仅转换前 15 个字符，fastbdf 读取遵循同一规则。写入会拒绝超过此长度的持续时间和超过 512 字节的事件文本，以免接收端静默截断。
+- 写入事件允许制表符、换行和回车，拒绝其他 ASCII 控制字符。结构化患者和记录字段中的附加说明保留原有下划线及内部空格。
+- 有波形通道的文件必须写完至少一条记录才能成功 `finish()`。可在补齐后重试。
+
 ## 开发与验证
 
 安装 Pixi、C++20 编译器和已 bootstrap 的 vcpkg，设置 `VCPKG_ROOT`。Windows 使用带 C++ 桌面开发组件的 Visual Studio，Linux 可用 GCC。Pixi 锁定开发工具，vcpkg manifest 的 `interop` feature 提供 EDFlib 1.27。

@@ -1,0 +1,30 @@
+name: EDF and BDF interoperability
+on: [push, pull_request]
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    strategy:
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Check out the vcpkg manifest baseline
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: microsoft/vcpkg
+          ref: 4702e381dbbd9b54d3f7e1eb565cd8981c1814cd
+          path: vcpkg-src
+      - name: Bootstrap vcpkg
+        shell: pwsh
+        run: |
+          $root = (Resolve-Path vcpkg-src).Path
+          "VCPKG_ROOT=$root" >> $env:GITHUB_ENV
+          if ($IsWindows) { & "$root/bootstrap-vcpkg.bat" -disableMetrics }
+          else { & "$root/bootstrap-vcpkg.sh" -disableMetrics }
+          exit $LASTEXITCODE
+      - run: cmake --preset dev
+      - run: cmake --build --preset dev --parallel 2
+      - run: ctest --preset dev

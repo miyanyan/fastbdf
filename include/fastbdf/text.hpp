@@ -37,6 +37,12 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <string_view>
 
 namespace fastbdf {
+namespace detail {
+inline constexpr bool allowed_annotation_byte(unsigned char c) noexcept {
+  return (c >= 32 && c != 127) || c == '\t' || c == '\n' || c == '\r';
+}
+} // namespace detail
+
 // Transliterates legacy header fields to printable EDF ASCII. EDFlib uses
 // Windows-1252 substitutions for the 0x80..0x9f range of its Latin-1 inputs.
 inline std::string header_text_from_latin1(std::string_view text) {

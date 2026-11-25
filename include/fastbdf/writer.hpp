@@ -1,5 +1,6 @@
 #pragma once
 
+#include "text.hpp"
 #include "types.hpp"
 #include <algorithm>
 #include <array>
@@ -97,6 +98,11 @@ public:
       fail("annotations require EDF+ or BDF+");
     if (annotation.duration && annotation.duration->count() < 0)
       fail("negative annotation duration");
+    if (annotation.duration &&
+        seconds(annotation.duration->count(), false).size() > 15)
+      fail("annotation duration exceeds the EDFlib precision limit");
+    if (annotation.text.size() > 512)
+      fail("annotation text exceeds 512 bytes");
     validate_utf8(annotation.text);
     annotations_.push_back(std::move(annotation));
   }
@@ -145,8 +151,8 @@ public:
       for (std::size_t i = 0; i < count; ++i)
         emit_record(nullptr);
     }
-    if (!annotations_.empty() && !records_)
-      fail("annotations require at least one data record");
+    if (!records_)
+      fail("cannot finish without at least one data record");
     // Plan every annotation block first so a capacity failure cannot partially
     // patch a file.
     if (plus_ && !annotations_.empty()) {
@@ -273,8 +279,8 @@ private:
     for (std::size_t i = 0; i < text.size();) {
       const auto c = static_cast<unsigned char>(text[i++]);
       if (c < 128) {
-        if (c == 0 || c == 20 || c == 21)
-          fail("annotation contains a TAL separator");
+        if (!detail::allowed_annotation_byte(c))
+          fail("annotation contains a forbidden control byte");
         continue;
       }
       unsigned n;
@@ -455,7 +461,9 @@ private:
       static constexpr const char *months[] = {"JAN", "FEB", "MAR", "APR",
                                                "MAY", "JUN", "JUL", "AUG",
                                                "SEP", "OCT", "NOV", "DEC"};
-      return pad(day) + "-" + months[m - 1] + "-" + std::to_string(y);
+      auto year = std::to_string(y);
+      year.insert(0, 4 - year.size(), '0');
+      return pad(day) + "-" + months[m - 1] + "-" + year;
     }
     return pad(day) + '.' + pad(m) + '.' + pad(unsigned(y % 100));
   }
@@ -528,7 +536,10 @@ private:
       };
       s.physical_min = parse(decimal(s.physical_min));
       s.physical_max = parse(decimal(s.physical_max));
-      if (s.label == "EDF Annotations" || s.label == "BDF Annotations")
+      auto label = std::string_view(s.label);
+      while (!label.empty() && label.back() == ' ')
+        label.remove_suffix(1);
+      if (label == "EDF Annotations" || label == "BDF Annotations")
         fail("reserved annotation label");
       if (s.samples_per_record >
           (max_record_bytes - data_bytes_) / sample_bytes_)
@@ -579,6 +590,10 @@ private:
       if (!info_.sex.empty() && info_.sex != "M" && info_.sex != "F" &&
           info_.sex != "X")
         fail("sex must be M, F or X");
+      // EDFlib requires the separator after the patient code at byte 72 or
+      // earlier.
+      if (info_.patient_code.size() > 72)
+        fail("patient code exceeds the EDFlib header limit");
       patient = token(info_.patient_code) + ' ' + token(info_.sex) + ' ' +
                 birthdate(info_.birthdate) + ' ' + token(info_.patient_name);
       if (!info_.patient_additional.empty())
