@@ -163,43 +163,6 @@ class Reader {
       throw Error("Reader is not open");
     file_->read_at(offset, out);
   }
-  static bool valid_annotation_text(std::string_view s) {
-    std::size_t i = 0;
-    while (i < s.size()) {
-      auto c = static_cast<unsigned char>(s[i++]);
-      if (c < 0x80) {
-        if (!detail::allowed_annotation_byte(c))
-          return false;
-        continue;
-      }
-      unsigned n;
-      std::uint32_t cp;
-      if (c >= 0xc2 && c <= 0xdf) {
-        n = 1;
-        cp = c & 31;
-      } else if (c >= 0xe0 && c <= 0xef) {
-        n = 2;
-        cp = c & 15;
-      } else if (c >= 0xf0 && c <= 0xf4) {
-        n = 3;
-        cp = c & 7;
-      } else
-        return false;
-      if (i + n > s.size())
-        return false;
-      for (unsigned j = 0; j < n; ++j) {
-        auto d = static_cast<unsigned char>(s[i++]);
-        if ((d & 0xc0) != 0x80)
-          return false;
-        cp = (cp << 6) | (d & 63);
-      }
-      if ((n == 1 && cp < 0x80) || (n == 2 && cp < 0x800) ||
-          (n == 3 && cp < 0x10000) || cp > 0x10ffff ||
-          (cp >= 0xd800 && cp <= 0xdfff))
-        return false;
-    }
-    return true;
-  }
   // Only the required prefix fields use underscores and space delimiters.
   // The remainder is free text; consume exactly one separator before it.
   template <std::size_t Count>
@@ -363,9 +326,11 @@ class Reader {
         auto e = tal.find('\x14', q + 1);
         if (e == tal.npos)
           throw Error("Unterminated annotation text");
-        auto text = tal.substr(q + 1, e - q - 1);
         if (mode != AnnotationMode::none) {
-          if (!valid_annotation_text(text))
+          // EDFlib exposes and checks the first 512 description bytes.
+          auto text = tal.substr(q + 1, std::min<std::size_t>(e - q - 1, 512));
+          if (!std::all_of(text.begin(), text.end(),
+                           detail::allowed_annotation_byte))
             throw Error("Invalid annotation text");
           annotations_.push_back({onset, duration, std::string(text)});
           if (mode == AnnotationMode::until_recording_ends &&

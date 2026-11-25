@@ -101,23 +101,15 @@ public:
     if (annotation.duration &&
         seconds(annotation.duration->count(), false).size() > 15)
       fail("annotation duration exceeds the EDFlib precision limit");
-    if (annotation.text.size() > 512)
-      fail("annotation text exceeds 512 bytes");
-    validate_utf8(annotation.text);
+    // Match EDFlib 1.27's byte-oriented description buffer.
+    auto &text = annotation.text;
+    text.resize(std::min<std::size_t>(text.size(), 40));
+    if (auto end = text.find('\0'); end != text.npos)
+      text.resize(end);
+    for (char &c : text)
+      if (static_cast<unsigned char>(c) < 32)
+        c = '.';
     annotations_.push_back(std::move(annotation));
-  }
-  void add_annotation_latin1(Tick onset, std::optional<Tick> duration,
-                             std::string_view text) {
-    std::string utf8;
-    for (unsigned char c : text) {
-      if (c < 128)
-        utf8.push_back(static_cast<char>(c));
-      else {
-        utf8.push_back(static_cast<char>(0xc0 | (c >> 6)));
-        utf8.push_back(static_cast<char>(0x80 | (c & 63)));
-      }
-    }
-    add_annotation({onset, duration, std::move(utf8)});
   }
   void flush() {
     ensure_open();
@@ -274,42 +266,6 @@ private:
       out += s;
     }
     return out;
-  }
-  static void validate_utf8(std::string_view text) {
-    for (std::size_t i = 0; i < text.size();) {
-      const auto c = static_cast<unsigned char>(text[i++]);
-      if (c < 128) {
-        if (!detail::allowed_annotation_byte(c))
-          fail("annotation contains a forbidden control byte");
-        continue;
-      }
-      unsigned n;
-      std::uint32_t cp, min;
-      if (c >= 0xc2 && c <= 0xdf) {
-        n = 1;
-        cp = c & 31;
-        min = 128;
-      } else if (c >= 0xe0 && c <= 0xef) {
-        n = 2;
-        cp = c & 15;
-        min = 2048;
-      } else if (c >= 0xf0 && c <= 0xf4) {
-        n = 3;
-        cp = c & 7;
-        min = 65536;
-      } else
-        fail("invalid annotation UTF-8");
-      if (i + n > text.size())
-        fail("truncated annotation UTF-8");
-      while (n--) {
-        auto b = static_cast<unsigned char>(text[i++]);
-        if ((b & 192) != 128)
-          fail("invalid annotation UTF-8 continuation");
-        cp = (cp << 6) | (b & 63);
-      }
-      if (cp < min || cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff))
-        fail("invalid annotation Unicode scalar");
-    }
   }
   std::string timekeeping(std::uint64_t record) const {
     const auto duration = info_.record_duration.count();

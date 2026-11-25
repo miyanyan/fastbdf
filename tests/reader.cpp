@@ -158,7 +158,8 @@ int main() {
     fixture(path);
     patch(path, 1024 + 6 + 9 + 6 + 1 + 4 + 1, std::string_view("\xc0\xaf", 2));
     auto utf = Reader::open(path);
-    invalid([&] { utf.annotations(); });
+    check(utf.annotations().at(0).text == "\xc0\xaf",
+          "preserve raw annotation bytes");
     return 0;
   } catch (const std::exception &e) {
     std::cerr << e.what() << '\n';

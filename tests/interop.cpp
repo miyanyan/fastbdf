@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <memory>
 #include <stdexcept>
 #include <vector>
@@ -344,8 +345,8 @@ static void annotation_edges(const std::filesystem::path &dir, bool bdf) {
            {},
            {{Tick{0}, std::nullopt, ""}},
            {{Tick{2500000}, Tick{1250000}, "first\tline\nnext\rlast"},
-            {Tick{9000000}, std::nullopt, "second"},
-            {Tick{12000000}, Tick{0}, "third"}}}) {
+            {Tick{9000000}, std::nullopt, std::string(39, 'a') + "\xc3\xa9"},
+            {Tick{12000000}, Tick{0}, std::string("hi\0end", 6)}}}) {
     for (bool upstream : {false, true}) {
       auto path = dir / (std::string(upstream ? "edges-up" : "edges-fast") +
                          (bdf ? ".bdf" : ".edf"));
@@ -354,11 +355,11 @@ static void annotation_edges(const std::filesystem::path &dir, bool bdf) {
       else
         create_fast(path, h, annotations);
       auto expected = annotations;
-      if (upstream)
-        for (auto &a : expected)
-          for (auto &c : a.text)
-            if (c == '\t' || c == '\n' || c == '\r')
-              c = '.';
+      if (expected.size() == 3) {
+        expected[0].text = "first.line.next.last";
+        expected[1].text = std::string(39, 'a') + "\xc3";
+        expected[2].text = "hi";
+      }
       Reader reader(path);
       auto hdr = std::make_unique<edflib_hdr_t>();
       ok(edfopen_file_readonly(path.string().c_str(), hdr.get(),
@@ -510,18 +511,6 @@ static void annotation_edges(const std::filesystem::path &dir, bool bdf) {
                   long_duration.duration_l,
           "long TAL duration matches upstream read buffer precision");
   }
-  for (unsigned c : {0u, 1u, 8u, 11u, 12u, 14u, 20u, 21u, 31u, 127u}) {
-    auto path = dir / (bdf ? "control.bdf" : "control.edf");
-    auto w = Writer::create(path, h);
-    bool rejected = false;
-    try {
-      w.add_annotation({Tick{}, std::nullopt,
-                        std::string("bad") + static_cast<char>(c) + "text"});
-    } catch (const Error &) {
-      rejected = true;
-    }
-    check(rejected, "writer rejects forbidden annotation controls");
-  }
 }
 
 static void verify_external(const std::filesystem::path &path) {
@@ -627,6 +616,28 @@ static void verify_writer_formats(const std::filesystem::path &dir, bool bdf) {
   w.add_annotation({Tick{1}, Tick{}, std::string(512, 'a')});
   w.finish();
   verify_external(events);
+  // A third-party file can have descriptions larger than either writer emits.
+  // The reader must consume the entire TAL but return only its first 512 bytes.
+  {
+    std::fstream file(events, std::ios::binary | std::ios::in | std::ios::out);
+    std::string bytes((std::istreambuf_iterator<char>(file)), {});
+    auto offset = bytes.find(std::string(40, 'a'));
+    check(offset != bytes.npos, "find annotation bytes");
+    auto tail = std::string(512, 'x') + "extra\x14";
+    tail.push_back('\0');
+    tail += "+0.5\x14next\x14";
+    check(offset + tail.size() < bytes.size(), "annotation fixture capacity");
+    file.seekp(static_cast<std::streamoff>(offset));
+    file.write(tail.data(), tail.size());
+    check(bool(file), "write long annotation fixture");
+  }
+  verify_external(events);
+  Reader long_reader(events);
+  const auto &annotations = long_reader.annotations();
+  check(annotations.size() == 3 &&
+            annotations[1].text == std::string(512, 'x') &&
+            annotations[2].text == "next",
+        "long description and following TAL");
 }
 
 int main(int argc, char **argv) {
