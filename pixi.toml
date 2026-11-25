@@ -1,0 +1,15 @@
+[workspace]
+name = "fastbdf"
+version = "0.1.0"
+channels = ["conda-forge"]
+platforms = ["win-64", "linux-64", "osx-arm64"]
+
+[dependencies]
+cmake = ">=3.25,<5"
+ninja = ">=1.11,<2"
+
+[tasks]
+configure = "cmake --preset dev"
+build = { cmd = "cmake --build --preset dev", depends-on = ["configure"] }
+test = { cmd = "ctest --preset dev", depends-on = ["build"] }
+bench = { cmd = "ctest --preset bench", depends-on = ["build"] }

@@ -1,0 +1,111 @@
+# fastbdf
+
+C++20 header-only 库，用于读取 EDF、BDF 波形和 EDF+/BDF+ 注释。可以按样本位置、通道游标或多通道时间窗读取，也可以逐通道或整条记录写入。应用只需 C++20 标准库和平台文件 API。EDFlib 1.27 用作独立的测试参考库。
+
+## 接入应用
+
+将 `include` 加入头文件搜索路径并启用 C++20，或通过 CMake 的 `add_subdirectory` 使用 `fastbdf::fastbdf`。也可以安装后使用包配置。
+
+```sh
+cmake -S . -B build/package -DCMAKE_INSTALL_PREFIX=build/install
+cmake --install build/package
+```
+
+给调用项目的 `CMAKE_PREFIX_PATH` 指定安装目录的绝对路径。
+
+```cmake
+find_package(fastbdf CONFIG REQUIRED)
+target_link_libraries(my_application PRIVATE fastbdf::fastbdf)
+```
+
+## 读取混合采样率的波形
+
+```cpp
+#include <fastbdf/fastbdf.hpp>
+using namespace std::chrono_literals;
+
+auto file = fastbdf::Reader::open("night.bdf");
+auto ids = file.select_unique({"Fp1", "Temp"});
+auto values = file.read_physical(ids, {30s, 40s});
+auto first = file.sample_index_at_or_after(ids[0], 30s);
+```
+
+`values[i]` 对应 `ids[i]`，各通道保留自己的样本数。时间相对于实际记录起点，窗口包含起点并排除终点。超出文件尾的部分返回空或短结果。通道 ID 从 0 开始，仅计入普通信号。标签有重名时可以遍历 `signals()` 选择 ID。反复翻页可用 `read_physical_into(ids, range, values)` 或 `read_digital_into` 复用结果容量。
+
+```cpp
+std::array<std::int32_t, 4096> chunk;
+auto cursor = file.cursor(ids[0]);
+cursor.seek(-512, std::ios_base::end);  // 该通道至少有 512 个样本
+auto n = cursor.read_digital(chunk);    // 只使用 chunk 的前 n 个元素
+```
+
+`read_digital_at(id, first, span)` 和 `read_physical_at` 支持按绝对位置并发读取。每个 `Cursor` 独立维护位置，支持 `seek/tell/rewind`。游标借用 Reader，须在 Reader 移动、重新打开或销毁前结束使用。便捷的 `file.read_digital(id, span)` 使用文件对象自己的每通道游标，多线程共享这些隐式游标时由调用方同步。
+
+## 写入并补记事件
+
+```cpp
+#include <array>
+#include <fastbdf/fastbdf.hpp>
+using namespace std::chrono_literals;
+
+fastbdf::RecordingInfo info;
+info.format = fastbdf::Format::bdf_plus;
+info.record_duration = 1s;
+auto& eeg = info.add_signal("Fp1", 4);  // 每条记录 4 个样本
+eeg.unit = "uV";
+eeg.physical_min = -100;
+eeg.physical_max = 100;
+info.add_signal("Temp", 1).unit = "C";
+
+auto writer = fastbdf::Writer::create("new.bdf", info);
+writer.write_digital_record(std::array<std::int32_t, 5>{-200, 0, 200, 400, 20});
+writer.add_annotation({250ms, std::nullopt, "stimulus"});
+writer.finish();
+```
+
+`create` 会覆盖目标路径。起始时间默认取本地系统时间，导出历史数据时应设置 `info.start` 和 `info.subsecond`。先选择格式再调用 `add_signal`，它会按 16 或 24 位设置数字范围。每次整记录输入按文件通道顺序连续排列。逐通道输入使用 `write_digital_samples`、`write_short_samples` 或 `write_physical_samples`。设备已输出小端样本时，`write_packed_record` 可直接接收普通通道字节，注释通道由库插入。
+
+`flush()` 刷出已完成的记录。`finish()` 校验是否有未完成的通道、写回晚到事件和记录数，成功后可以重复调用。要确认文件写入成功，必须显式调用它。写入期间内存保存尚待写回的事件。通过 `WriterOptions` 预留每条记录的注释通道数、每通道字节数和位置，容量不足会报错。
+
+## 格式与兼容行为
+
+| 能力 | 行为 |
+|---|---|
+| 经典 EDF、BDF | 读写 16 位或 24 位小端信号，保留经典 patient 和 recording 字段 |
+| 连续 EDF+、BDF+ | 读写结构化元数据、负增益、亚秒起点、混合采样率、UTF-8 事件、多注释通道及仅含注释的文件 |
+| 不连续 EDF+D、BDF+D | 可读取有正记录时长的波形，`record_start(r)` 返回考虑间断后的相对时间。时间窗跳过间断，不填充样本。Writer 输出连续记录。零记录时长仅支持纯注释文件 |
+| 数值 | digital 输出按头部数字范围截断；physical 依据头部标定转换。physical 写入在边界饱和，区间内换算后向零取整。packed 写保留输入字节 |
+| 时间与编码 | `Tick` 精度为 100 ns。事件缺失时长用 `std::nullopt`，零时长用 `Tick{0}`。UTF-8 事件直接传入；Latin-1 事件用 `add_annotation_latin1`。头部字段为可打印 ASCII，可用 `header_text_from_latin1` 转换遗留字符串 |
+| 注释读取 | 默认 `lazy` 在首次访问 `annotations()` 时加载。`none` 跳过事件，`all` 在打开时加载全部，`until_recording_ends` 复现 EDFlib 的停止标记规则。延迟加载时，连续记录的首次打开只需读取头部和第一条记录的计时信息；不连续记录要建立时间索引 |
+| 错误与句柄 | 捕获 `fastbdf::Error` 并查看 `code()`。原生入口使用 RAII。如需文件计数、按路径查找和枚举句柄，可包含 `<fastbdf/file_set.hpp>`，用同一个 `FileSet` 打开、创建和关闭这些文件 |
+
+EDFlib 的 `*_hr` 注释写函数接收微秒，旧函数接收 100 微秒单位，迁移时使用相应的 `std::chrono::duration` 转换。EDFlib 用户从原生 C++ 接口迁移，本项目不导出其 C ABI。
+
+## 开发与验证
+
+安装 Pixi、C++20 编译器和已 bootstrap 的 vcpkg，设置 `VCPKG_ROOT`。Windows 使用带 C++ 桌面开发组件的 Visual Studio，Linux 可用 GCC。Pixi 锁定开发工具，vcpkg manifest 的 `interop` feature 提供 EDFlib 1.27。
+
+```sh
+pixi install --locked
+pixi run test
+pixi run bench
+```
+
+原生测试覆盖手工构造的经典格式、混合采样率、间断、负增益、截断文件、UTF-8、时长、独立游标与并发定位读取、跨翻译单元链接，以及写入中断后的行为。互操作测试让两个库互读对方生成的文件。也可给 `fastbdf_interop` 可执行文件传入一个或多个 EDF/BDF 路径，分块比对全部 digital、physical 和注释。Windows 开发预设下可执行文件位于 `build/dev/Release/`。
+
+已用 Sleep-EDF Expanded 的一份 22 小时 5 分钟记录验证全部 24,168,000 个数字样本；物理量误差在 `1e-10 × max(1, |参考值|)` 内。配套文件的 154 条事件按文本、起点、持续时间逐条匹配。测试数据独立下载，常规测试不需要联网下载录制数据。[PSG 文件](https://physionet.org/files/sleep-edfx/1.0.0/sleep-cassette/SC4001E0-PSG.edf) · [标注文件](https://physionet.org/files/sleep-edfx/1.0.0/sleep-cassette/SC4001EC-Hypnogram.edf)
+
+基准使用 16 通道、每记录每通道 1024 点的合成 BDF+，比较相同输入的整文件、单通道、多通道时间窗和短随机读取，核对校验和。将具体结果连同编译器、文件大小和缓存状态一起解释。
+
+
+在本机 Windows x64、MSVC 19.51 Release、1,000 条记录、46.875 MiB 样本的热缓存测试中，得到以下结果。吞吐操作取预热后 5 次的中位数；短读 P95 取 512 对请求，首屏 P95 取 40 对打开并读取 10 秒全通道数据的请求。写入计时包含创建、写记录和关闭，结果在计时外校验。
+
+| 工作负载 | fastbdf | EDFlib 1.27 |
+|---|---:|---:|
+| 全通道批量读取 | 27.91 ms | 668.42 ms |
+| 单通道完整读取 | 5.04 ms | 41.86 ms |
+| 整文件数字样本写入 | 29.23 ms | 73.20 ms |
+| 打开到首屏 P95 | 0.89 ms | 17.43 ms |
+| 随机读取 64 点 P95 | 8.4 µs | 8.8 µs |
+
+以上数字反映这一台机器和这一种缓存状态。真实睡眠记录用于验证兼容性。Windows 和 Linux 已执行双向互操作、安装后消费测试，Linux 另通过 AddressSanitizer 和 UndefinedBehaviorSanitizer 原生测试。

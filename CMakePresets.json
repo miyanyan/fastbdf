@@ -1,0 +1,23 @@
+{
+  "version": 6,
+  "configurePresets": [
+    {
+      "name": "dev",
+      "binaryDir": "${sourceDir}/build/dev",
+      "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "FASTBDF_TESTS": "ON",
+        "FASTBDF_INTEROP": "ON",
+        "VCPKG_MANIFEST_FEATURES": "interop"
+      }
+    }
+  ],
+  "buildPresets": [{"name": "dev", "configurePreset": "dev", "configuration": "Release"}],
+  "testPresets": [
+    {"name": "dev", "configurePreset": "dev", "configuration": "Release",
+     "filter": {"exclude": {"label": "benchmark"}}, "output": {"outputOnFailure": true}},
+    {"name": "bench", "configurePreset": "dev", "configuration": "Release",
+     "filter": {"include": {"label": "benchmark"}}, "output": {"verbosity": "verbose"}}
+  ]
+}

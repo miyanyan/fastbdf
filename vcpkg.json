@@ -1,0 +1,13 @@
+{
+  "name": "fastbdf",
+  "version-semver": "0.1.0",
+  "description": "Header-only C++20 EDF and BDF signal I/O",
+  "builtin-baseline": "4702e381dbbd9b54d3f7e1eb565cd8981c1814cd",
+  "features": {
+    "interop": {
+      "description": "Reference implementation for differential tests and benchmarks",
+      "dependencies": ["edflib"]
+    }
+  }
+}
+
