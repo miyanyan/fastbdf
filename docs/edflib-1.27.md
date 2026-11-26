@@ -1,6 +1,6 @@
 # EDFlib 1.27 功能对照
 
-基线为 EDFlib v1.27；样本写入测试对应 fastbdf 提交 `6370cde`。下表收录上游头文件中全部 **50 个不同名称的公开函数**，包括废弃别名；同名的编译器条件声明计一次。比较目标是 C++ 调用方可用的功能、生成的文件和读回结果。C ABI、全局句柄编号和整数错误码不作为替代接口承诺。[上游头文件](https://gitlab.com/Teuniz/EDFlib/-/blob/v1.27/edflib.h) · [上游实现](https://gitlab.com/Teuniz/EDFlib/-/blob/v1.27/edflib.c)
+基线为 EDFlib v1.27。下表收录上游头文件中全部 **50 个不同名称的公开函数**，包括废弃别名；同名的编译器条件声明计一次。比较目标是 C++ 调用方可用的功能、生成的文件和读回结果。C ABI、全局句柄编号和整数错误码不作为替代接口承诺。[上游头文件](https://gitlab.com/Teuniz/EDFlib/-/blob/v1.27/edflib.h) · [上游实现](https://gitlab.com/Teuniz/EDFlib/-/blob/v1.27/edflib.c)
 
 **互验**表示现有测试已用真实 EDFlib 对照该行注明的结果；**原生**表示有 fastbdf 自身断言；**待验**表示有实现或组合用法，但缺少所列行为的直接对照；**差异**表示源码或测试已经能确认行为不同。同一行可以同时有已验证的正常路径和待验证的边界。
 
@@ -40,7 +40,7 @@
 | EDFlib 入口 | fastbdf 用法 | 已有证据或差异 |
 |---|---|---|
 | `edfwrite_digital_samples`、`edf_blockwrite_digital_samples` | `Writer::write_digital_samples/write_digital_record` | **互验**。上游逐通道写与 fastbdf 整记录写生成的样本均经双库核对，覆盖 BDF 有符号端点。BDF+ 的 int32 block 入口也已用同输入核对，包括超出 24 位范围一档的饱和。 |
-| `edfwrite_physical_samples`、`edf_blockwrite_physical_samples` | `Writer::write_physical_samples/write_physical_record` | **互验**。上游逐通道写与 fastbdf 整记录写后比较数字码，已有饱和、截断样例。EDF+、BDF+ 的逐通道与 block 入口已分别对照，覆盖负增益量化边界及浮点换算产生的端点偏差。 |
+| `edfwrite_physical_samples`、`edf_blockwrite_physical_samples` | `Writer::write_physical_samples/write_physical_record` | **互验**。上游逐通道写与 fastbdf 整记录写后比较数字码，已有饱和、截断样例。EDF+、BDF+ 的逐通道与 block 入口已分别对照，覆盖负增益量化边界。**有意差异**：在物理范围 19 → −7、数字范围 −100 → 200 时，输入 19，fastbdf 精确写入 −100，EDFlib 1.27 经浮点换算和截断写入 −99。两库均能读回对方实际写入的数字码。 |
 | `edfwrite_digital_short_samples`、`edf_blockwrite_digital_short_samples` | `Writer::write_short_samples/write_short_record` | **差异**。上游两个 short 入口只接受 EDF 系列；fastbdf 也可将 int16 输入写为 24 位 BDF。**原生**覆盖 BDF 整记录；**互验**共同支持的 EDF+ 逐通道和整记录路径，覆盖 int16 端点及窄标定范围的饱和。 |
 | `edf_blockwrite_digital_3byte_samples` | `Writer::write_packed_record`，传入一条记录普通通道的小端字节 | **互验**。EDFlib 能从 fastbdf 的 packed 文件读回有符号端点；同一小端缓冲区也已交给上游 3-byte 写入口，两套读取器逐点验证两份文件。 |
 | `edf_get_annotation` | `Reader::annotations()` 返回事件序列，元素包含 `onset/duration/text` | **互验**。包括空正文、零时长与缺失时长、亚秒起点、原始字节、超 512 字节正文后的下一条事件。见 `annotation_edges`、`verify_writer_formats`。 |

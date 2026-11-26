@@ -65,7 +65,8 @@ void check_codes(const std::filesystem::path &path, const RecordingInfo &info,
 template <class Write>
 void compare_writers(const std::filesystem::path &dir, const char *name,
                      const RecordingInfo &info,
-                     const std::vector<Codes> &expected, Write write) {
+                     const std::vector<Codes> &expected, Write write,
+                     const std::vector<Codes> &reference_expected = {}) {
   bool bdf = info.format == Format::bdf_plus;
   auto prefix = std::string(name);
   auto fast = dir / (prefix + "-fast" + (bdf ? ".bdf" : ".edf"));
@@ -94,7 +95,8 @@ void compare_writers(const std::filesystem::path &dir, const char *name,
     throw;
   }
   require(edfclose_file(h) == 0, "finish reference");
-  check_codes(ref, info, expected);
+  check_codes(ref, info,
+              reference_expected.empty() ? expected : reference_expected);
   check_codes(fast, info, expected);
 }
 
@@ -180,9 +182,13 @@ void negative_gain(const std::filesystem::path &dir, Format fmt) {
                               6,
                               -7,
                               -8};
-  Codes expected{-2, -2, -1, -1, 0, 0, 0, 1, 1, 2, 2, -100, -99, 50, 200, 200};
+  Codes expected{-2, -2, -1, -1, 0, 0, 0, 1, 1, 2, 2, -100, -100, 50, 200, 200};
+  Codes reference = expected;
+  // At physical_min = 19, EDFlib truncates -99.99999999999999 to -99.
+  reference[12] = -99;
   compare_writers(
-      dir, "negative", info, {expected, expected}, [&](Writer &w, int h) {
+      dir, "negative", info, {expected, expected},
+      [&](Writer &w, int h) {
         w.write_physical_samples(std::span(samples).first(11));
         w.write_physical_samples(std::span(samples).subspan(11));
         require(edfwrite_physical_samples(h, samples.data()) == 0 &&
@@ -191,7 +197,8 @@ void negative_gain(const std::filesystem::path &dir, Format fmt) {
         w.write_physical_record(samples);
         require(edf_blockwrite_physical_samples(h, samples.data()) == 0,
                 "write physical block");
-      });
+      },
+      {reference, reference});
 }
 } // namespace
 

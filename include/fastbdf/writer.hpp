@@ -300,20 +300,22 @@ private:
   std::int32_t physical(double x, const SignalSpec &s) const {
     if (!std::isfinite(x))
       fail("non-finite physical sample");
-    // EDFlib applies the calibration even at the declared endpoints. Rounding
-    // before truncation can move an endpoint one code toward zero.
+    if (s.physical_min < s.physical_max) {
+      if (x <= s.physical_min)
+        return s.digital_min;
+      if (x >= s.physical_max)
+        return s.digital_max;
+    } else {
+      if (x >= s.physical_min)
+        return s.digital_min;
+      if (x <= s.physical_max)
+        return s.digital_max;
+    }
     const auto bitvalue = (s.physical_max - s.physical_min) /
                           (double(s.digital_max) - s.digital_min);
     const auto offset = s.physical_max / bitvalue - s.digital_max;
     auto value = x / bitvalue - offset;
     if (!std::isfinite(value) || !std::isfinite(bitvalue) || bitvalue == 0) {
-      // Keep the fallback interpolation bounded for extreme finite inputs.
-      x = std::clamp(x, (std::min)(s.physical_min, s.physical_max),
-                     (std::max)(s.physical_min, s.physical_max));
-      if (x == s.physical_min)
-        return s.digital_min;
-      if (x == s.physical_max)
-        return s.digital_max;
       const auto scale =
           (std::max)(std::abs(s.physical_min), std::abs(s.physical_max));
       const auto fraction = (x / scale - s.physical_min / scale) /
