@@ -1,9 +1,21 @@
 #pragma once
 
 #include "../types.hpp"
+#include <array>
 #include <limits>
 
 namespace fastbdf::detail {
+
+inline constexpr std::array<std::string_view, 12> month_names = {
+    "JAN", "FEB", "MAR", "APR", "MAY", "JUN",
+    "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"};
+
+inline std::string two_digits(unsigned n) {
+  auto text = std::to_string(n);
+  if (text.size() < 2)
+    text.insert(text.begin(), '0');
+  return text;
+}
 
 inline constexpr std::int64_t ticks_per_second = Tick::period::den;
 

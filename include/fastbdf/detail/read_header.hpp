@@ -79,6 +79,25 @@ inline std::string decoded(std::string s) {
   std::replace(s.begin(), s.end(), '_', ' ');
   return s;
 }
+inline std::chrono::year_month_day parse_extended_date(std::string_view text,
+                                                       const char *field) {
+  if (text.size() != 11 || text[2] != '-' || text[6] != '-')
+    throw Error(std::string("Invalid ") + field);
+  const auto month =
+      std::find(month_names.begin(), month_names.end(), text.substr(3, 3));
+  if (month == month_names.end())
+    throw Error(std::string("Invalid ") + field);
+  const auto date =
+      std::chrono::year{static_cast<int>(integer(text.substr(7), field))} /
+      std::chrono::month{
+          static_cast<unsigned>(month - month_names.begin() + 1)} /
+      std::chrono::day{
+          static_cast<unsigned>(integer(text.substr(0, 2), field))};
+  if (!date.ok())
+    throw Error(std::string("Invalid ") + field);
+  return date;
+}
+
 inline void parse_identification(RecordingInfo &info) {
   if (info.format != Format::edf_plus && info.format != Format::bdf_plus)
     return;
@@ -94,27 +113,10 @@ inline void parse_identification(RecordingInfo &info) {
   info.birthdate = decoded(p[2]);
   info.patient_name = decoded(p[3]);
   if (!info.birthdate.empty()) {
-    static constexpr std::array<std::string_view, 12> months = {
-        "JAN", "FEB", "MAR", "APR", "MAY", "JUN",
-        "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"};
-    const auto &b = info.birthdate;
-    if (b.size() != 11 || b[2] != '-' || b[6] != '-')
-      throw Error("Invalid patient birthdate");
-    auto m = std::find(months.begin(), months.end(),
-                       std::string_view(b).substr(3, 3));
-    if (m == months.end())
-      throw Error("Invalid patient birthdate");
-    auto day = integer(std::string_view(b).substr(0, 2), "birth day"),
-         year = integer(std::string_view(b).substr(7), "birth year");
-    auto date =
-        std::chrono::year{static_cast<int>(year)} /
-        std::chrono::month{static_cast<unsigned>(m - months.begin() + 1)} /
-        std::chrono::day{static_cast<unsigned>(day)};
-    if (!date.ok())
-      throw Error("Invalid patient birthdate");
-    const auto month = static_cast<unsigned>(m - months.begin() + 1);
-    info.birthdate = b.substr(7) + "-" + (month < 10 ? "0" : "") +
-                     std::to_string(month) + "-" + b.substr(0, 2);
+    const auto date = parse_extended_date(info.birthdate, "patient birthdate");
+    info.birthdate = info.birthdate.substr(7) + "-" +
+                     two_digits(unsigned(date.month())) + "-" +
+                     info.birthdate.substr(0, 2);
   }
   info.patient_additional = patient_tail;
   info.admin_code = decoded(r[2]);
@@ -123,24 +125,7 @@ inline void parse_identification(RecordingInfo &info) {
   info.recording_additional = recording_tail;
   // EDF+ uses the unambiguous four-digit date in the recording field.
   if (r[1] != "X") {
-    static constexpr std::array<std::string_view, 12> months = {
-        "JAN", "FEB", "MAR", "APR", "MAY", "JUN",
-        "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"};
-    const auto &d = r[1];
-    if (d.size() != 11 || d[2] != '-' || d[6] != '-')
-      throw Error("Invalid EDF+ start date");
-    auto it = std::find(months.begin(), months.end(),
-                        std::string_view(d).substr(3, 3));
-    if (it == months.end())
-      throw Error("Invalid EDF+ month");
-    auto date =
-        std::chrono::year{
-            static_cast<int>(integer(std::string_view(d).substr(7), "year"))} /
-        std::chrono::month{static_cast<unsigned>(it - months.begin() + 1)} /
-        std::chrono::day{static_cast<unsigned>(
-            integer(std::string_view(d).substr(0, 2), "day"))};
-    if (!date.ok())
-      throw Error("Invalid EDF+ date");
+    const auto date = parse_extended_date(r[1], "EDF+ start date");
     auto original = std::chrono::year_month_day{
         std::chrono::floor<std::chrono::days>(info.start)};
     if (original.month() != date.month() || original.day() != date.day() ||

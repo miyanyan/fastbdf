@@ -9,8 +9,6 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
-#include <limits>
-#include <map>
 #include <ranges>
 #include <span>
 #include <string>
@@ -101,70 +99,29 @@ public:
     ensure_open();
     if (next_signal_)
       fail("cannot finish a partially written data record");
-    if (info_.signals.empty() && records_ == 0) {
-      std::size_t slot = 0, used = detail::timekeeping(info_, 0).size();
-      for (const auto &a : annotations_) {
-        const auto n = detail::annotation_tal(info_, a).size();
-        if (n > options_.annotation_bytes_per_signal)
-          fail("annotation exceeds channel capacity");
-        while (used + n > options_.annotation_bytes_per_signal) {
-          ++slot;
-          used = slot % options_.annotation_signals == 0
-                     ? detail::timekeeping(info_,
-                                           slot / options_.annotation_signals)
-                           .size()
-                     : 0;
-          if (n + used > options_.annotation_bytes_per_signal &&
-              options_.annotation_signals == 1)
-            fail("annotation exceeds timekeeping channel capacity");
-        }
-        used += n;
-      }
-      const auto count = slot / options_.annotation_signals + 1;
-      for (std::size_t i = 0; i < count; ++i)
+    const bool generate_records = info_.signals.empty() && records_ == 0;
+    if (!records_ && !generate_records)
+      fail("cannot finish without at least one data record");
+    auto blocks = plan_annotation_blocks(generate_records);
+    if (generate_records) {
+      const auto count =
+          blocks.empty()
+              ? 1
+              : (blocks.size() - 1) / options_.annotation_signals + 1;
+      while (records_ < count)
         emit_record(nullptr);
     }
-    if (!records_)
-      fail("cannot finish without at least one data record");
-    // Plan every annotation block first so a capacity failure cannot partially
-    // patch a file.
-    if (layout_.plus && !annotations_.empty()) {
-      std::map<std::size_t, std::string> blocks;
-      if (records_ > (std::numeric_limits<std::size_t>::max)() /
-                         options_.annotation_signals)
-        fail("too many records");
-      const auto capacity =
-          static_cast<std::size_t>(records_) * options_.annotation_signals;
-      auto block_for = [&](std::size_t slot) -> std::string & {
-        auto [it, inserted] = blocks.try_emplace(slot);
-        if (inserted && slot % options_.annotation_signals == 0)
-          it->second =
-              detail::timekeeping(info_, slot / options_.annotation_signals);
-        return it->second;
-      };
-      std::size_t slot = 0;
-      for (const auto &a : annotations_) {
-        auto tal = detail::annotation_tal(info_, a);
-        if (tal.size() > options_.annotation_bytes_per_signal)
-          fail("annotation exceeds channel capacity");
-        while (slot < capacity && block_for(slot).size() + tal.size() >
-                                      options_.annotation_bytes_per_signal)
-          ++slot;
-        if (slot == capacity)
-          fail("annotation capacity exhausted; increase annotation channels or "
-               "bytes before writing");
-        block_for(slot) += tal;
-      }
-      for (auto &[slot, block] : blocks) {
-        const auto record = slot / options_.annotation_signals,
-                   channel = slot % options_.annotation_signals;
-        output_.seekp(static_cast<std::streamoff>(
-            layout_.header_bytes + record * layout_.record_bytes +
-            layout_.annotation_offset +
-            channel * options_.annotation_bytes_per_signal));
-        block.resize(options_.annotation_bytes_per_signal, '\0');
-        output_.write(block.data(), static_cast<std::streamsize>(block.size()));
-      }
+    for (std::size_t slot = 0; slot < blocks.size(); ++slot) {
+      const auto record = slot / options_.annotation_signals,
+                 channel = slot % options_.annotation_signals;
+      output_.seekp(static_cast<std::streamoff>(
+          layout_.header_bytes +
+          static_cast<std::uint64_t>(record) * layout_.record_bytes +
+          layout_.annotation_offset +
+          channel * options_.annotation_bytes_per_signal));
+      auto &block = blocks[slot];
+      block.resize(options_.annotation_bytes_per_signal, '\0');
+      output_.write(block.data(), static_cast<std::streamsize>(block.size()));
     }
     constexpr auto record_count = detail::fixed_header::record_count;
     output_.seekp(record_count.offset);
@@ -183,7 +140,8 @@ private:
   WriterOptions options_;
   std::ofstream output_;
   std::vector<Annotation> annotations_;
-  std::vector<char> pending_, encoded_;
+  std::vector<char> record_buffer_;
+  std::size_t channel_offset_{};
   detail::WriteLayout layout_;
   std::size_t next_signal_{};
   std::uint64_t records_ = 0;
@@ -200,20 +158,51 @@ private:
     if (!output_)
       throw Error("Recording write failed", Errc::io);
   }
+  // Slots are filled in file order. Plan them before emitting or patching
+  // records.
+  std::vector<std::string> plan_annotation_blocks(bool generate_records) const {
+    std::vector<std::string> blocks;
+    const auto block_bytes = options_.annotation_bytes_per_signal;
+    for (const auto &annotation : annotations_) {
+      auto tal = detail::annotation_tal(info_, annotation);
+      if (tal.size() > block_bytes)
+        fail("annotation exceeds channel capacity");
+      while (blocks.empty() ||
+             blocks.back().size() + tal.size() > block_bytes) {
+        const auto slot = blocks.size();
+        const auto record = slot / options_.annotation_signals;
+        if (!generate_records && record >= records_)
+          fail("annotation capacity exhausted; increase annotation channels or "
+               "bytes before writing");
+        if (record >=
+            detail::max_decimal_count(detail::fixed_header::record_count))
+          fail("EDF record count exceeds eight digits");
+        auto &block = blocks.emplace_back();
+        if (slot % options_.annotation_signals == 0) {
+          block = detail::timekeeping(info_, record);
+          if (generate_records && options_.annotation_signals == 1 &&
+              record > 0 && block.size() + tal.size() > block_bytes)
+            fail("annotation exceeds timekeeping channel capacity");
+        }
+      }
+      blocks.back() += tal;
+    }
+    return blocks;
+  }
   template <class T> void write_record(std::span<const T> samples) {
     ensure_open();
     if (next_signal_ ||
         samples.size() != layout_.data_bytes / layout_.sample_bytes)
       fail("record sample count or channel order mismatch");
-    encoded_.resize(layout_.data_bytes);
+    record_buffer_.resize(layout_.data_bytes);
     std::size_t pos = 0;
     for (const auto &signal : info_.signals) {
       detail::encode_channel(
           layout_.sample_bytes, samples.subspan(pos, signal.samples_per_record),
-          signal, encoded_.data() + pos * layout_.sample_bytes);
+          signal, record_buffer_.data() + pos * layout_.sample_bytes);
       pos += signal.samples_per_record;
     }
-    emit_record(encoded_.data());
+    emit_record(record_buffer_.data());
   }
   template <class T>
   void write_channel(std::size_t channel, std::span<const T> samples) {
@@ -223,13 +212,16 @@ private:
     const auto &s = info_.signals[channel];
     if (samples.size() != s.samples_per_record)
       fail("channel sample count mismatch");
-    encoded_.resize(samples.size() * layout_.sample_bytes);
-    detail::encode_channel(layout_.sample_bytes, samples, s, encoded_.data());
-    pending_.insert(pending_.end(), encoded_.begin(), encoded_.end());
-    if (++next_signal_ == info_.signals.size()) {
-      emit_record(pending_.data());
-      pending_.clear();
+    record_buffer_.resize(layout_.data_bytes);
+    detail::encode_channel(layout_.sample_bytes, samples, s,
+                           record_buffer_.data() + channel_offset_);
+    if (channel + 1 == info_.signals.size()) {
+      emit_record(record_buffer_.data());
       next_signal_ = 0;
+      channel_offset_ = 0;
+    } else {
+      ++next_signal_;
+      channel_offset_ += samples.size() * layout_.sample_bytes;
     }
   }
   void emit_record(const char *data) {

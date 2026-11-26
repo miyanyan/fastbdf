@@ -61,21 +61,13 @@ inline std::string date(std::chrono::year_month_day d, bool extended) {
   const auto y = int(d.year());
   const auto m = unsigned(d.month());
   const auto day = unsigned(d.day());
-  auto pad = [](unsigned n) {
-    auto s = std::to_string(n);
-    if (s.size() < 2)
-      s = '0' + s;
-    return s;
-  };
   if (extended) {
-    static constexpr const char *months[] = {"JAN", "FEB", "MAR", "APR",
-                                             "MAY", "JUN", "JUL", "AUG",
-                                             "SEP", "OCT", "NOV", "DEC"};
     auto year = std::to_string(y);
     year.insert(0, 4 - year.size(), '0');
-    return pad(day) + "-" + months[m - 1] + "-" + year;
+    return two_digits(day) + "-" + std::string(month_names[m - 1]) + "-" + year;
   }
-  return pad(day) + '.' + pad(m) + '.' + pad(unsigned(y % 100));
+  return two_digits(day) + '.' + two_digits(m) + '.' +
+         two_digits(unsigned(y % 100));
 }
 inline std::string birthdate(std::string value) {
   if (value.empty() || value == "X")
@@ -138,7 +130,9 @@ inline WriteLayout prepare_layout(RecordingInfo &info, WriterOptions &options) {
     if (!std::isfinite(s.physical_min) || !std::isfinite(s.physical_max) ||
         s.physical_min == s.physical_max)
       throw Error("invalid physical limits");
-    if (decimal(s.physical_min) == decimal(s.physical_max))
+    const auto physical_min = decimal(s.physical_min);
+    const auto physical_max = decimal(s.physical_max);
+    if (physical_min == physical_max)
       throw Error("physical limits collapse in header precision");
     auto parse = [](const std::string &str) {
       double x{};
@@ -147,8 +141,8 @@ inline WriteLayout prepare_layout(RecordingInfo &info, WriterOptions &options) {
         throw Error("invalid calibration");
       return x;
     };
-    s.physical_min = parse(decimal(s.physical_min));
-    s.physical_max = parse(decimal(s.physical_max));
+    s.physical_min = parse(physical_min);
+    s.physical_max = parse(physical_max);
     const auto label = detail::trim_spaces(s.label);
     if (label == "EDF Annotations" || label == "BDF Annotations")
       throw Error("reserved annotation label");
@@ -192,12 +186,6 @@ inline std::string encode_header(const RecordingInfo &info,
   if (!ymd.ok() || int(ymd.year()) < 1985 || int(ymd.year()) > 2084)
     throw Error("EDF start year must be 1985 through 2084");
   const auto tod = std::chrono::hh_mm_ss(info.start - days);
-  auto pad = [](auto n) {
-    auto s = std::to_string(n);
-    if (s.size() < 2)
-      s = '0' + s;
-    return s;
-  };
   std::string h(layout.header_bytes, ' ');
   h.replace(fixed_header::version.offset, fixed_header::version.width,
             layout.sample_bytes == 3 ? bdf_version : edf_version);
@@ -225,9 +213,9 @@ inline std::string encode_header(const RecordingInfo &info,
   put(fixed_header::patient, patient);
   put(fixed_header::recording, recording);
   put(fixed_header::start_date, date(ymd, false));
-  put(fixed_header::start_time, pad(tod.hours().count()) + '.' +
-                                    pad(tod.minutes().count()) + '.' +
-                                    pad(tod.seconds().count()));
+  put(fixed_header::start_time, two_digits(tod.hours().count()) + '.' +
+                                    two_digits(tod.minutes().count()) + '.' +
+                                    two_digits(tod.seconds().count()));
   put(fixed_header::header_bytes, std::to_string(layout.header_bytes));
   put(fixed_header::reserved,
       layout.plus ? (layout.sample_bytes == 3 ? "BDF+C" : "EDF+C") : "");

@@ -127,6 +127,47 @@ int main() {
     check(contents(path).find("latin\xe9") != std::string::npos);
   }
   {
+    // A 32-byte channel has room for 22 description bytes after the
+    // five-byte timekeeping TAL and five bytes of event framing.
+    WriterOptions opts;
+    opts.annotation_bytes_per_signal = 32;
+    opts.annotation_signals = 2;
+    RecordingInfo only;
+    auto w = Writer::create(path, only, opts);
+    w.add_annotation({Tick{}, {}, std::string(22, 'a')});
+    w.add_annotation({Tick{}, {}, std::string(27, 'b')});
+    w.add_annotation({Tick{}, {}, "c"});
+    w.finish();
+    check(w.records_written() == 2);
+    const auto bytes = contents(path);
+    check(bytes.substr(768 + 8, 22) == std::string(22, 'a'));
+    check(bytes.substr(768 + 32 + 3, 27) == std::string(27, 'b'));
+    check(bytes[768 + 64 + 8] == 'c');
+  }
+  {
+    WriterOptions opts;
+    opts.annotation_bytes_per_signal = 32;
+    auto w = Writer::create(path, info, opts);
+    std::int32_t data[6]{};
+    w.write_digital_record(data);
+    w.add_annotation({Tick{}, {}, std::string(22, 'a')});
+    w.add_annotation({Tick{}, {}, "later"});
+    throws([&] { w.finish(); });
+    check(w.records_written() == 1);
+    w.write_digital_record(data);
+    w.finish();
+    check(w.records_written() == 2);
+    check(contents(path).find("later") != std::string::npos);
+  }
+  {
+    WriterOptions opts;
+    opts.annotation_bytes_per_signal = 32;
+    auto w = Writer::create(path, RecordingInfo{}, opts);
+    w.add_annotation({Tick{}, {}, std::string(23, 'a')});
+    throws([&] { w.finish(); });
+    check(w.records_written() == 0);
+  }
+  {
     WriterOptions opts;
     opts.annotation_bytes_per_signal =
         std::numeric_limits<std::size_t>::max() - 1;
