@@ -1,0 +1,264 @@
+#pragma once
+
+#include "file_source.hpp"
+#include "time.hpp"
+#include <algorithm>
+#include <array>
+#include <charconv>
+#include <cmath>
+#include <limits>
+
+namespace fastbdf::detail {
+
+struct Channel {
+  SignalSpec spec;
+  std::uint64_t offset{};
+  bool annotation{};
+};
+
+struct ReadHeader {
+  RecordingInfo info;
+  std::vector<Channel> channels;
+  std::vector<std::size_t> data_channels;
+  std::uint64_t records{}, header_bytes{}, record_bytes{};
+  unsigned width{};
+  bool discontinuous{};
+};
+
+inline std::string trim(std::string_view s) {
+  return std::string(detail::trim_spaces(s));
+}
+inline std::int64_t integer(std::string_view s, const char *field) {
+  auto t = trim(s);
+  if (t.size() >= 2 && t[0] == '+' && t[1] >= '0' && t[1] <= '9')
+    t.erase(t.begin());
+  std::int64_t n{};
+  auto [p, e] = std::from_chars(t.data(), t.data() + t.size(), n);
+  if (e != std::errc{} || p != t.data() + t.size() || t.empty())
+    throw Error(std::string("Invalid ") + field);
+  return n;
+}
+inline double number(std::string_view s, const char *field) {
+  auto t = trim(s);
+  double n{};
+  if (!t.empty() && t.front() == '+')
+    t.erase(t.begin());
+  auto [p, e] = std::from_chars(t.data(), t.data() + t.size(), n);
+  if (e != std::errc{} || p != t.data() + t.size() || t.empty() ||
+      !std::isfinite(n))
+    throw Error(std::string("Invalid ") + field);
+  return n;
+}
+
+inline std::uint64_t product(std::uint64_t a, std::uint64_t b) {
+  if (b && a > (std::numeric_limits<std::uint64_t>::max)() / b)
+    throw Error("File size overflows");
+  return a * b;
+}
+
+// Only the required prefix fields use underscores and space delimiters.
+// The remainder is free text; consume exactly one separator before it.
+template <std::size_t Count>
+inline std::array<std::string, Count>
+identification_fields(std::string_view &tail) {
+  std::array<std::string, Count> fields;
+  for (auto &field : fields) {
+    if (tail.empty() || tail.front() == ' ')
+      throw Error("Missing EDF+ identification field");
+    const auto end = tail.find(' ');
+    field = tail.substr(0, end);
+    tail.remove_prefix(end == tail.npos ? tail.size() : end + 1);
+  }
+  return fields;
+}
+inline std::string decoded(std::string s) {
+  if (s == "X")
+    return {};
+  std::replace(s.begin(), s.end(), '_', ' ');
+  return s;
+}
+inline void parse_identification(RecordingInfo &info) {
+  if (info.format != Format::edf_plus && info.format != Format::bdf_plus)
+    return;
+  std::string_view patient_tail = info.patient, recording_tail = info.recording;
+  auto p = identification_fields<4>(patient_tail);
+  auto r = identification_fields<5>(recording_tail);
+  if (r[0] != "Startdate")
+    throw Error("Invalid EDF+ identification fields");
+  info.patient_code = decoded(p[0]);
+  info.sex = decoded(p[1]);
+  if (!info.sex.empty() && info.sex != "M" && info.sex != "F")
+    throw Error("Invalid patient sex");
+  info.birthdate = decoded(p[2]);
+  info.patient_name = decoded(p[3]);
+  if (!info.birthdate.empty()) {
+    static constexpr std::array<std::string_view, 12> months = {
+        "JAN", "FEB", "MAR", "APR", "MAY", "JUN",
+        "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"};
+    const auto &b = info.birthdate;
+    if (b.size() != 11 || b[2] != '-' || b[6] != '-')
+      throw Error("Invalid patient birthdate");
+    auto m = std::find(months.begin(), months.end(),
+                       std::string_view(b).substr(3, 3));
+    if (m == months.end())
+      throw Error("Invalid patient birthdate");
+    auto day = integer(std::string_view(b).substr(0, 2), "birth day"),
+         year = integer(std::string_view(b).substr(7), "birth year");
+    auto date =
+        std::chrono::year{static_cast<int>(year)} /
+        std::chrono::month{static_cast<unsigned>(m - months.begin() + 1)} /
+        std::chrono::day{static_cast<unsigned>(day)};
+    if (!date.ok())
+      throw Error("Invalid patient birthdate");
+    const auto month = static_cast<unsigned>(m - months.begin() + 1);
+    info.birthdate = b.substr(7) + "-" + (month < 10 ? "0" : "") +
+                     std::to_string(month) + "-" + b.substr(0, 2);
+  }
+  info.patient_additional = patient_tail;
+  info.admin_code = decoded(r[2]);
+  info.technician = decoded(r[3]);
+  info.equipment = decoded(r[4]);
+  info.recording_additional = recording_tail;
+  // EDF+ uses the unambiguous four-digit date in the recording field.
+  if (r[1] != "X") {
+    static constexpr std::array<std::string_view, 12> months = {
+        "JAN", "FEB", "MAR", "APR", "MAY", "JUN",
+        "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"};
+    const auto &d = r[1];
+    if (d.size() != 11 || d[2] != '-' || d[6] != '-')
+      throw Error("Invalid EDF+ start date");
+    auto it = std::find(months.begin(), months.end(),
+                        std::string_view(d).substr(3, 3));
+    if (it == months.end())
+      throw Error("Invalid EDF+ month");
+    auto date =
+        std::chrono::year{
+            static_cast<int>(integer(std::string_view(d).substr(7), "year"))} /
+        std::chrono::month{static_cast<unsigned>(it - months.begin() + 1)} /
+        std::chrono::day{static_cast<unsigned>(
+            integer(std::string_view(d).substr(0, 2), "day"))};
+    if (!date.ok())
+      throw Error("Invalid EDF+ date");
+    auto original = std::chrono::year_month_day{
+        std::chrono::floor<std::chrono::days>(info.start)};
+    if (original.month() != date.month() || original.day() != date.day() ||
+        int(original.year()) % 100 != int(date.year()) % 100)
+      throw Error("EDF+ start dates disagree");
+    auto tod = info.start - std::chrono::floor<std::chrono::days>(info.start);
+    info.start = std::chrono::local_days{date} + tod;
+  }
+}
+
+inline ReadHeader read_header(const FileSource &file) {
+  ReadHeader header;
+  std::array<char, 256> fixed{};
+  file.read_at(0, fixed);
+  std::string_view f(fixed.data(), fixed.size());
+  const bool bdf =
+      static_cast<unsigned char>(f[0]) == 0xff && f.substr(1, 7) == "BIOSEMI";
+  if (!bdf && f.substr(0, 8) != "0       ")
+    throw Error("Unsupported EDF/BDF version");
+  header.width = bdf ? 3 : 2;
+  for (std::size_t i = 8; i < f.size(); ++i)
+    if (static_cast<unsigned char>(f[i]) < 32 ||
+        static_cast<unsigned char>(f[i]) > 126)
+      throw Error("Non-ASCII EDF/BDF header");
+  header.info.patient = trim(f.substr(8, 80));
+  header.info.recording = trim(f.substr(88, 80));
+  const auto reserved = trim(f.substr(192, 44));
+  const auto plus = reserved.starts_with(bdf ? "BDF+" : "EDF+");
+  if (plus && !(reserved.starts_with(bdf ? "BDF+C" : "EDF+C") ||
+                reserved.starts_with(bdf ? "BDF+D" : "EDF+D")))
+    throw Error("Invalid EDF+ continuity marker");
+  header.discontinuous = plus && reserved[4] == 'D';
+  header.info.format = bdf ? (plus ? Format::bdf_plus : Format::bdf)
+                           : (plus ? Format::edf_plus : Format::edf);
+  auto date = f.substr(168, 8), time = f.substr(176, 8);
+  if (date[2] != '.' || date[5] != '.' || time[2] != '.' || time[5] != '.')
+    throw Error("Invalid start date/time");
+  auto y = integer(date.substr(6, 2), "year");
+  y += y >= 85 ? 1900 : 2000;
+  auto d = std::chrono::year{static_cast<int>(y)} /
+           std::chrono::month{
+               static_cast<unsigned>(integer(date.substr(3, 2), "month"))} /
+           std::chrono::day{
+               static_cast<unsigned>(integer(date.substr(0, 2), "day"))};
+  auto hh = integer(time.substr(0, 2), "hour"),
+       mm = integer(time.substr(3, 2), "minute"),
+       ss = integer(time.substr(6, 2), "second");
+  if (!d.ok() || hh < 0 || hh > 23 || mm < 0 || mm > 59 || ss < 0 || ss > 59)
+    throw Error("Invalid start date/time");
+  header.info.start = std::chrono::local_days{d} + std::chrono::hours{hh} +
+                      std::chrono::minutes{mm} + std::chrono::seconds{ss};
+  auto ns = integer(f.substr(252, 4), "signal count");
+  if (ns <= 0 || ns > 4096)
+    throw Error("Invalid signal count");
+  auto hb = integer(f.substr(184, 8), "header length");
+  if (hb != 256 + 256 * ns)
+    throw Error("Invalid header length");
+  header.header_bytes = static_cast<std::uint64_t>(hb);
+  const auto declared = integer(f.substr(236, 8), "record count");
+  if (declared < -1)
+    throw Error("Invalid record count");
+  header.info.record_duration = ticks(f.substr(244, 8), "record duration");
+  if (header.info.record_duration.count() < 0)
+    throw Error("Record duration must be nonnegative");
+  std::vector<char> raw(static_cast<std::size_t>(ns) * 256);
+  file.read_at(256, raw);
+  for (char c : raw)
+    if (static_cast<unsigned char>(c) < 32 ||
+        static_cast<unsigned char>(c) > 126)
+      throw Error("Non-ASCII signal header");
+  auto field = [&](std::size_t offset, std::size_t length, std::size_t i) {
+    return std::string_view(raw.data() + offset * ns + length * i, length);
+  };
+  for (std::size_t i = 0; i < static_cast<std::size_t>(ns); ++i) {
+    Channel c;
+    auto &s = c.spec;
+    s.label = trim(field(0, 16, i));
+    s.transducer = trim(field(16, 80, i));
+    s.unit = trim(field(96, 8, i));
+    s.physical_min = number(field(104, 8, i), "physical minimum");
+    s.physical_max = number(field(112, 8, i), "physical maximum");
+    auto mn = integer(field(120, 8, i), "digital minimum"),
+         mx = integer(field(128, 8, i), "digital maximum");
+    auto limit = bdf ? 8388608 : 32768;
+    if (mn < -limit || mx >= limit || mn >= mx)
+      throw Error("Invalid digital range");
+    s.digital_min = static_cast<std::int32_t>(mn);
+    s.digital_max = static_cast<std::int32_t>(mx);
+    if (s.physical_min == s.physical_max)
+      throw Error("Invalid physical range");
+    s.prefilter = trim(field(136, 80, i));
+    auto samples = integer(field(216, 8, i), "samples per record");
+    if (samples <= 0 || samples > (std::numeric_limits<std::uint32_t>::max)())
+      throw Error("Invalid samples per record");
+    s.samples_per_record = static_cast<std::uint32_t>(samples);
+    c.offset = header.record_bytes;
+    header.record_bytes +=
+        product(static_cast<std::uint64_t>(samples), header.width);
+    c.annotation =
+        plus && s.label == (bdf ? "BDF Annotations" : "EDF Annotations");
+    if (!c.annotation) {
+      header.data_channels.push_back(header.channels.size());
+      header.info.signals.push_back(s);
+    }
+    header.channels.push_back(std::move(c));
+  }
+  if (header.info.record_duration.count() == 0 &&
+      (!plus || !header.data_channels.empty()))
+    throw Error("Zero duration requires annotation-only EDF+");
+  if (header.record_bytes > header.width * (5u * 1024u * 1024u))
+    throw Error("Data record exceeds the EDFlib size limit");
+  const auto size = file.size();
+  if (size < header.header_bytes ||
+      (size - header.header_bytes) % header.record_bytes)
+    throw Error("Incomplete data record");
+  header.records = (size - header.header_bytes) / header.record_bytes;
+  if (declared >= 0 && static_cast<std::uint64_t>(declared) != header.records)
+    throw Error("Record count does not match file size");
+  parse_identification(header.info);
+  return header;
+}
+
+} // namespace fastbdf::detail

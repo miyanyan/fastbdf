@@ -1,10 +1,10 @@
 #pragma once
-#include "detail/file_source.hpp"
+#include "detail/read_header.hpp"
+#include "detail/sample_codec.hpp"
+#include "detail/tal.hpp"
 #include "types.hpp"
 #include <algorithm>
 #include <array>
-#include <charconv>
-#include <cmath>
 #include <concepts>
 #include <filesystem>
 #include <initializer_list>
@@ -19,8 +19,6 @@
 #include <vector>
 
 namespace fastbdf {
-enum class AnnotationMode { none, lazy, all, until_recording_ends };
-
 template <class R>
 concept SampleOutput = std::convertible_to<R, std::span<std::int32_t>> ||
                        std::convertible_to<R, std::span<double>>;
@@ -29,106 +27,21 @@ concept SampleOutput = std::convertible_to<R, std::span<std::int32_t>> ||
 // concurrently. Reopening the reader and its legacy implicit cursors require
 // synchronization.
 class Reader {
-  struct Channel {
-    SignalSpec spec;
-    std::uint64_t offset{};
-    bool annotation{};
-  };
-  RecordingInfo info_{};
+  detail::ReadHeader header_;
   std::optional<detail::FileSource> file_;
-  std::vector<Channel> channels_;
-  std::vector<std::size_t> data_channels_;
   std::vector<std::uint64_t> cursors_;
   mutable std::vector<Annotation> annotations_;
   std::vector<Tick> record_onsets_;
-  std::uint64_t records_{}, header_bytes_{}, record_bytes_{};
-  unsigned width_{};
-  bool discontinuous_{};
-  mutable Tick current_record_onset_{};
   mutable bool annotations_loaded_ = true;
   std::unique_ptr<std::mutex> annotation_mutex_ =
       std::make_unique<std::mutex>();
-  std::string raw_patient_, raw_recording_, reserved_;
-  static constexpr std::int64_t ticks_per_second = 10000000;
-
-  static std::string trim(std::string_view s) {
-    return std::string(detail::trim_spaces(s));
-  }
-  static std::int64_t integer(std::string_view s, const char *field) {
-    auto t = trim(s);
-    if (t.size() >= 2 && t[0] == '+' && t[1] >= '0' && t[1] <= '9')
-      t.erase(t.begin());
-    std::int64_t n{};
-    auto [p, e] = std::from_chars(t.data(), t.data() + t.size(), n);
-    if (e != std::errc{} || p != t.data() + t.size() || t.empty())
-      throw Error(std::string("Invalid ") + field);
-    return n;
-  }
-  static double number(std::string_view s, const char *field) {
-    auto t = trim(s);
-    double n{};
-    if (!t.empty() && t.front() == '+')
-      t.erase(t.begin());
-    auto [p, e] = std::from_chars(t.data(), t.data() + t.size(), n);
-    if (e != std::errc{} || p != t.data() + t.size() || t.empty() ||
-        !std::isfinite(n))
-      throw Error(std::string("Invalid ") + field);
-    return n;
-  }
-  static Tick ticks(std::string_view s, const char *field) {
-    auto t = trim(s);
-    std::size_t p = 0;
-    bool negative = false;
-    if (p < t.size() && (t[p] == '+' || t[p] == '-'))
-      negative = t[p++] == '-';
-    std::uint64_t whole = 0, fraction = 0;
-    unsigned digits = 0;
-    bool any = false;
-    const auto limit =
-        static_cast<std::uint64_t>((std::numeric_limits<std::int64_t>::max)()) +
-        (negative ? 1u : 0u);
-    while (p < t.size() && t[p] >= '0' && t[p] <= '9') {
-      any = true;
-      auto d = static_cast<unsigned>(t[p++] - '0');
-      if (whole > (limit / ticks_per_second - d) / 10)
-        throw Error("Time value overflows");
-      whole = whole * 10 + d;
-    }
-    if (p < t.size() && t[p] == '.') {
-      ++p;
-      while (p < t.size() && t[p] >= '0' && t[p] <= '9') {
-        any = true;
-        auto d = static_cast<unsigned>(t[p++] - '0');
-        if (digits < 7) {
-          fraction = fraction * 10 + d;
-          ++digits;
-        } // EDFlib truncates sub-tick fractional digits toward zero.
-      }
-    }
-    if (!any || p != t.size())
-      throw Error(std::string("Invalid ") + field);
-    while (digits++ < 7)
-      fraction *= 10;
-    if (whole > limit / ticks_per_second ||
-        whole * ticks_per_second > limit - fraction)
-      throw Error("Time value overflows");
-    const auto magnitude = whole * ticks_per_second + fraction;
-    if (negative && magnitude == limit)
-      return (Tick::min)();
-    auto value = static_cast<std::int64_t>(magnitude);
-    return Tick{negative ? -value : value};
-  }
-  static std::uint64_t product(std::uint64_t a, std::uint64_t b) {
-    if (b && a > (std::numeric_limits<std::uint64_t>::max)() / b)
-      throw Error("File size overflows");
-    return a * b;
-  }
   void normalize_annotations() const {
     for (auto &annotation : annotations_) {
       if (annotation.onset.count() <
-          (std::numeric_limits<std::int64_t>::min)() + info_.subsecond.count())
+          (std::numeric_limits<std::int64_t>::min)() +
+              header_.info.subsecond.count())
         throw Error("Annotation onset overflows");
-      annotation.onset -= info_.subsecond;
+      annotation.onset -= header_.info.subsecond;
     }
   }
   // Exact ceil(a*b/c), with a<c and b<=UINT32_MAX, without nonstandard
@@ -164,223 +77,10 @@ class Reader {
       throw Error("Reader is not open");
     file_->read_at(offset, out);
   }
-  // Only the required prefix fields use underscores and space delimiters.
-  // The remainder is free text; consume exactly one separator before it.
-  template <std::size_t Count>
-  static std::array<std::string, Count>
-  identification_fields(std::string_view &tail) {
-    std::array<std::string, Count> fields;
-    for (auto &field : fields) {
-      if (tail.empty() || tail.front() == ' ')
-        throw Error("Missing EDF+ identification field");
-      const auto end = tail.find(' ');
-      field = tail.substr(0, end);
-      tail.remove_prefix(end == tail.npos ? tail.size() : end + 1);
-    }
-    return fields;
-  }
-  static std::string decoded(std::string s) {
-    if (s == "X")
-      return {};
-    std::replace(s.begin(), s.end(), '_', ' ');
-    return s;
-  }
-  void parse_identification() {
-    info_.patient = raw_patient_;
-    info_.recording = raw_recording_;
-    if (info_.format != Format::edf_plus && info_.format != Format::bdf_plus)
-      return;
-    std::string_view patient_tail = raw_patient_,
-                     recording_tail = raw_recording_;
-    auto p = identification_fields<4>(patient_tail);
-    auto r = identification_fields<5>(recording_tail);
-    if (r[0] != "Startdate")
-      throw Error("Invalid EDF+ identification fields");
-    info_.patient_code = decoded(p[0]);
-    info_.sex = decoded(p[1]);
-    if (!info_.sex.empty() && info_.sex != "M" && info_.sex != "F")
-      throw Error("Invalid patient sex");
-    info_.birthdate = decoded(p[2]);
-    info_.patient_name = decoded(p[3]);
-    if (!info_.birthdate.empty()) {
-      static constexpr std::array<std::string_view, 12> months = {
-          "JAN", "FEB", "MAR", "APR", "MAY", "JUN",
-          "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"};
-      const auto &b = info_.birthdate;
-      if (b.size() != 11 || b[2] != '-' || b[6] != '-')
-        throw Error("Invalid patient birthdate");
-      auto m = std::find(months.begin(), months.end(),
-                         std::string_view(b).substr(3, 3));
-      if (m == months.end())
-        throw Error("Invalid patient birthdate");
-      auto day = integer(std::string_view(b).substr(0, 2), "birth day"),
-           year = integer(std::string_view(b).substr(7), "birth year");
-      auto date =
-          std::chrono::year{static_cast<int>(year)} /
-          std::chrono::month{static_cast<unsigned>(m - months.begin() + 1)} /
-          std::chrono::day{static_cast<unsigned>(day)};
-      if (!date.ok())
-        throw Error("Invalid patient birthdate");
-      const auto month = static_cast<unsigned>(m - months.begin() + 1);
-      info_.birthdate = b.substr(7) + "-" + (month < 10 ? "0" : "") +
-                        std::to_string(month) + "-" + b.substr(0, 2);
-    }
-    info_.patient_additional = patient_tail;
-    info_.admin_code = decoded(r[2]);
-    info_.technician = decoded(r[3]);
-    info_.equipment = decoded(r[4]);
-    info_.recording_additional = recording_tail;
-    // EDF+ uses the unambiguous four-digit date in the recording field.
-    if (r[1] != "X") {
-      static constexpr std::array<std::string_view, 12> months = {
-          "JAN", "FEB", "MAR", "APR", "MAY", "JUN",
-          "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"};
-      const auto &d = r[1];
-      if (d.size() != 11 || d[2] != '-' || d[6] != '-')
-        throw Error("Invalid EDF+ start date");
-      auto it = std::find(months.begin(), months.end(),
-                          std::string_view(d).substr(3, 3));
-      if (it == months.end())
-        throw Error("Invalid EDF+ month");
-      auto date =
-          std::chrono::year{static_cast<int>(
-              integer(std::string_view(d).substr(7), "year"))} /
-          std::chrono::month{static_cast<unsigned>(it - months.begin() + 1)} /
-          std::chrono::day{static_cast<unsigned>(
-              integer(std::string_view(d).substr(0, 2), "day"))};
-      if (!date.ok())
-        throw Error("Invalid EDF+ date");
-      auto original = std::chrono::year_month_day{
-          std::chrono::floor<std::chrono::days>(info_.start)};
-      if (original.month() != date.month() || original.day() != date.day() ||
-          int(original.year()) % 100 != int(date.year()) % 100)
-        throw Error("EDF+ start dates disagree");
-      auto tod =
-          info_.start - std::chrono::floor<std::chrono::days>(info_.start);
-      info_.start = std::chrono::local_days{date} + tod;
-    }
-  }
-  static Tick tal_time(std::string_view text, bool is_duration) {
-    auto digits = text;
-    if (!is_duration) {
-      if (digits.empty() || (digits.front() != '+' && digits.front() != '-'))
-        throw Error("Invalid annotation onset");
-      digits.remove_prefix(1);
-    }
-    const auto dot = digits.find('.');
-    if (digits.empty() || digits.front() == '.' || digits.back() == '.' ||
-        (dot != digits.npos && digits.find('.', dot + 1) != digits.npos) ||
-        digits.find_first_not_of("0123456789.") != digits.npos)
-      throw Error("Invalid TAL time");
-    // EDFlib 1.27 validates the full duration, then copies 15 characters
-    // before converting it to ticks. Onsets use the complete spelling.
-    return ticks(is_duration ? text.substr(0, 15) : text, "TAL time");
-  }
-
-  // TAL bytes are stored consecutively, including all bytes of 16/24 bit words.
-  bool parse_tals(std::span<const char> bytes, std::uint64_t,
-                  bool first_channel, AnnotationMode mode) const {
-    std::size_t p = 0;
-    if (!first_channel && mode == AnnotationMode::none)
-      return false;
-    bool first = true;
-    while (p < bytes.size()) {
-      if (bytes[p] == '\0') {
-        ++p;
-        continue;
-      }
-      const auto begin = p;
-      while (p < bytes.size() && bytes[p] != '\0')
-        ++p;
-      if (p == bytes.size())
-        throw Error("Unterminated annotation TAL");
-      std::string_view tal(bytes.data() + begin, p - begin);
-      ++p;
-      auto sep = tal.find_first_of("\x14\x15");
-      if (sep == tal.npos)
-        throw Error("Invalid annotation onset");
-      auto onset = tal_time(tal.substr(0, sep), false);
-      std::optional<Tick> duration;
-      auto q = sep;
-      if (tal[q] == '\x15') {
-        auto e = tal.find('\x14', q + 1);
-        if (e == tal.npos)
-          throw Error("Invalid annotation duration");
-        duration = tal_time(tal.substr(q + 1, e - q - 1), true);
-        q = e;
-      }
-      if (first && first_channel) {
-        if (q + 1 >= tal.size() || tal[q + 1] != '\x14' || duration)
-          throw Error("Missing record timekeeping TAL");
-        current_record_onset_ = onset;
-        if (mode == AnnotationMode::none)
-          return false;
-        // Skip just the first empty description reserved for record
-        // timekeeping. Subsequent descriptions in the same TAL may themselves
-        // be events.
-        ++q;
-      }
-      first = false;
-      while (q + 1 < tal.size()) {
-        if (tal[q] != '\x14')
-          throw Error("Invalid annotation separator");
-        auto e = tal.find('\x14', q + 1);
-        if (e == tal.npos)
-          throw Error("Unterminated annotation text");
-        if (mode != AnnotationMode::none) {
-          // EDFlib exposes and checks the first 512 description bytes.
-          auto text = tal.substr(q + 1, std::min<std::size_t>(e - q - 1, 512));
-          if (!std::all_of(text.begin(), text.end(), [](unsigned char c) {
-                return (c >= 32 && c != 127) || c == '\t' || c == '\n' ||
-                       c == '\r';
-              }))
-            throw Error("Invalid annotation text");
-          annotations_.push_back({onset, duration, std::string(text)});
-          if (mode == AnnotationMode::until_recording_ends &&
-              text.starts_with("Recording ends"))
-            return true;
-        }
-        q = e;
-      }
-    }
-    if (first && first_channel)
-      throw Error("Missing record timekeeping TAL");
-    return false;
-  }
-  const Channel &channel(std::size_t signal) const {
-    if (signal >= data_channels_.size())
+  const detail::Channel &channel(std::size_t signal) const {
+    if (signal >= header_.data_channels.size())
       throw Error("Signal index out of range");
-    return channels_[data_channels_[signal]];
-  }
-  template <class T>
-  void decode(const unsigned char *ptr, std::span<T> out,
-              const SignalSpec &s) const {
-    const double gain = (s.physical_max - s.physical_min) /
-                        (static_cast<double>(s.digital_max) - s.digital_min);
-    for (auto &sample : out) {
-      std::uint32_t v = std::uint32_t(ptr[0]) | (std::uint32_t(ptr[1]) << 8);
-      if (width_ == 3)
-        v |= std::uint32_t(ptr[2]) << 16;
-      const auto raw = width_ == 2
-                           ? static_cast<std::int32_t>(v ^ 0x8000) - 0x8000
-                           : static_cast<std::int32_t>(v ^ 0x800000) - 0x800000;
-      const auto value = std::clamp(raw, s.digital_min, s.digital_max);
-      if constexpr (std::is_same_v<T, std::int32_t>)
-        sample = value;
-      else if (value == s.digital_min)
-        sample = s.physical_min;
-      else if (value == s.digital_max)
-        sample = s.physical_max;
-      else if (std::isfinite(gain))
-        sample = s.physical_min +
-                 (static_cast<double>(value) - s.digital_min) * gain;
-      else
-        sample =
-            std::lerp(s.physical_min, s.physical_max,
-                      (static_cast<double>(value) - s.digital_min) /
-                          (static_cast<double>(s.digital_max) - s.digital_min));
-      ptr += width_;
-    }
+    return header_.channels[header_.data_channels[signal]];
   }
   template <class T>
   std::size_t read_at_impl(std::size_t signal, std::uint64_t first,
@@ -396,28 +96,31 @@ class Reader {
     const auto spr = ch.spec.samples_per_record;
     const auto first_record = first / spr,
                last_record = (first + count - 1) / spr;
-    if (first_record == last_record && count <= 1024 / width_) {
+    if (first_record == last_record && count <= 1024 / header_.width) {
       std::array<char, 1024> bytes;
-      read_bytes(header_bytes_ + first_record * record_bytes_ + ch.offset +
-                     (first % spr) * width_,
-                 std::span<char>(bytes).first(count * width_));
-      decode(reinterpret_cast<const unsigned char *>(bytes.data()),
-             out.first(count), ch.spec);
+      read_bytes(header_.header_bytes + first_record * header_.record_bytes +
+                     ch.offset + (first % spr) * header_.width,
+                 std::span<char>(bytes).first(count * header_.width));
+      detail::decode(header_.width,
+                     reinterpret_cast<const unsigned char *>(bytes.data()),
+                     out.first(count), ch.spec);
       return count;
     }
     if (first_record == last_record ||
-        product(spr, width_) * 4 < record_bytes_) {
+        detail::product(spr, header_.width) * 4 < header_.record_bytes) {
       std::vector<char> bytes;
       std::size_t written = 0;
       for (auto r = first_record; r <= last_record; ++r) {
         const auto lo = r == first_record ? first % spr : 0;
         const auto hi = r == last_record ? (first + count - 1) % spr + 1 : spr;
-        bytes.resize(static_cast<std::size_t>(hi - lo) * width_);
-        read_bytes(header_bytes_ + r * record_bytes_ + ch.offset + lo * width_,
+        bytes.resize(static_cast<std::size_t>(hi - lo) * header_.width);
+        read_bytes(header_.header_bytes + r * header_.record_bytes + ch.offset +
+                       lo * header_.width,
                    bytes);
-        decode(reinterpret_cast<const unsigned char *>(bytes.data()),
-               out.subspan(written, static_cast<std::size_t>(hi - lo)),
-               ch.spec);
+        detail::decode(header_.width,
+                       reinterpret_cast<const unsigned char *>(bytes.data()),
+                       out.subspan(written, static_cast<std::size_t>(hi - lo)),
+                       ch.spec);
         written += static_cast<std::size_t>(hi - lo);
       }
       return written;
@@ -426,25 +129,29 @@ class Reader {
     // Bound temporary storage so enormous recordings remain streamable.
     constexpr std::uint64_t target = 8 * 1024 * 1024;
     const auto batch_records =
-        std::max<std::uint64_t>(1, target / record_bytes_);
+        std::max<std::uint64_t>(1, target / header_.record_bytes);
     std::vector<char> buffer;
     std::size_t written = 0;
     for (auto r = first_record; r <= last_record;) {
       const auto n = (std::min)(batch_records, last_record - r + 1);
-      const auto size = product(n, record_bytes_);
+      const auto size = detail::product(n, header_.record_bytes);
       if (size > buffer.max_size())
         throw Error("Data record too large");
       buffer.resize(static_cast<std::size_t>(size));
-      read_bytes(header_bytes_ + product(r, record_bytes_), buffer);
+      read_bytes(header_.header_bytes +
+                     detail::product(r, header_.record_bytes),
+                 buffer);
       for (std::uint64_t j = 0; j < n; ++j) {
         const auto record = r + j;
         const auto lo = record == first_record ? first % spr : 0;
         const auto hi =
             record == last_record ? (first + count - 1) % spr + 1 : spr;
         auto *ptr = reinterpret_cast<const unsigned char *>(
-            buffer.data() + j * record_bytes_ + ch.offset + lo * width_);
-        decode(ptr, out.subspan(written, static_cast<std::size_t>(hi - lo)),
-               ch.spec);
+            buffer.data() + j * header_.record_bytes + ch.offset +
+            lo * header_.width);
+        detail::decode(header_.width, ptr,
+                       out.subspan(written, static_cast<std::size_t>(hi - lo)),
+                       ch.spec);
         written += static_cast<std::size_t>(hi - lo);
       }
       r += n;
@@ -477,7 +184,8 @@ class Reader {
       throw Error("Invalid time range");
     std::vector<SampleBounds> bounds;
     bounds.reserve(signals.size());
-    std::uint64_t selected_bytes = 0, first_record = records_, end_record = 0;
+    std::uint64_t selected_bytes = 0, first_record = header_.records,
+                  end_record = 0;
     for (auto id : signals) {
       const auto spr = channel(id).spec.samples_per_record;
       const auto lo = sample_index_at_or_after(id, range.begin);
@@ -485,7 +193,7 @@ class Reader {
       if (hi - lo > std::vector<T>{}.max_size())
         throw Error("Requested window too large");
       bounds.emplace_back(lo, hi);
-      selected_bytes += product(spr, width_);
+      selected_bytes += detail::product(spr, header_.width);
       if (lo < hi) {
         first_record = (std::min)(first_record, lo / spr);
         end_record = (std::max)(end_record, (hi - 1) / spr + 1);
@@ -494,18 +202,19 @@ class Reader {
     prepare_window(result, bounds);
     if (first_record >= end_record)
       return;
-    if (signals.size() == 1 || selected_bytes < record_bytes_ / 4) {
+    if (signals.size() == 1 || selected_bytes < header_.record_bytes / 4) {
       for (std::size_t i = 0; i < signals.size(); ++i)
         read_at(signals[i], bounds[i].first, std::span<T>(result[i]));
       return;
     }
     const auto batch =
-        std::max<std::uint64_t>(1, 8 * 1024 * 1024 / record_bytes_);
+        std::max<std::uint64_t>(1, 8 * 1024 * 1024 / header_.record_bytes);
     std::vector<char> buffer;
     for (auto r = first_record; r < end_record;) {
       const auto n = (std::min)(batch, end_record - r);
-      buffer.resize(static_cast<std::size_t>(product(n, record_bytes_)));
-      read_bytes(header_bytes_ + r * record_bytes_, buffer);
+      buffer.resize(
+          static_cast<std::size_t>(detail::product(n, header_.record_bytes)));
+      read_bytes(header_.header_bytes + r * header_.record_bytes, buffer);
       for (std::size_t i = 0; i < signals.size(); ++i) {
         const auto &ch = channel(signals[i]);
         const auto spr = ch.spec.samples_per_record;
@@ -516,13 +225,13 @@ class Reader {
           if (end <= begin)
             continue;
           auto *ptr = reinterpret_cast<const unsigned char *>(
-              buffer.data() + (rec - r) * record_bytes_ + ch.offset +
-              (begin - rec * spr) * width_);
-          decode(ptr,
-                 std::span<T>(result[i]).subspan(
-                     static_cast<std::size_t>(begin - lo),
-                     static_cast<std::size_t>(end - begin)),
-                 ch.spec);
+              buffer.data() + (rec - r) * header_.record_bytes + ch.offset +
+              (begin - rec * spr) * header_.width);
+          detail::decode(header_.width, ptr,
+                         std::span<T>(result[i]).subspan(
+                             static_cast<std::size_t>(begin - lo),
+                             static_cast<std::size_t>(end - begin)),
+                         ch.spec);
         }
       }
       r += n;
@@ -610,171 +319,79 @@ public:
   }
 
 private:
+  bool read_annotation_record(std::uint64_t record, AnnotationMode mode,
+                              std::vector<char> &bytes, Tick &onset) const {
+    bool first = true;
+    for (const auto &channel : header_.channels) {
+      if (!channel.annotation)
+        continue;
+      bytes.resize(static_cast<std::size_t>(channel.spec.samples_per_record) *
+                   header_.width);
+      read_bytes(header_.header_bytes + record * header_.record_bytes +
+                     channel.offset,
+                 bytes);
+      if (detail::parse_tals(bytes, first, mode, onset, annotations_))
+        return true;
+      if (mode == AnnotationMode::none)
+        break;
+      first = false;
+    }
+    return false;
+  }
+  void validate_next_onset(Tick previous, Tick onset) const {
+    const Tick duration = header_.info.record_duration;
+    if (previous > (Tick::max)() - duration)
+      throw Error("Record onset overflows");
+    const Tick expected = previous + duration;
+    if (header_.discontinuous ? onset < expected : onset != expected)
+      throw Error("Invalid record onset sequence");
+  }
   void open_impl(const std::filesystem::path &path, AnnotationMode mode) {
     file_.emplace(path);
-    std::array<char, 256> fixed{};
-    read_bytes(0, fixed);
-    std::string_view f(fixed.data(), fixed.size());
-    const bool bdf =
-        static_cast<unsigned char>(f[0]) == 0xff && f.substr(1, 7) == "BIOSEMI";
-    if (!bdf && f.substr(0, 8) != "0       ")
-      throw Error("Unsupported EDF/BDF version");
-    width_ = bdf ? 3 : 2;
-    for (std::size_t i = 8; i < f.size(); ++i)
-      if (static_cast<unsigned char>(f[i]) < 32 ||
-          static_cast<unsigned char>(f[i]) > 126)
-        throw Error("Non-ASCII EDF/BDF header");
-    raw_patient_ = trim(f.substr(8, 80));
-    raw_recording_ = trim(f.substr(88, 80));
-    reserved_ = trim(f.substr(192, 44));
-    const auto plus = reserved_.starts_with(bdf ? "BDF+" : "EDF+");
-    if (plus && !(reserved_.starts_with(bdf ? "BDF+C" : "EDF+C") ||
-                  reserved_.starts_with(bdf ? "BDF+D" : "EDF+D")))
-      throw Error("Invalid EDF+ continuity marker");
-    discontinuous_ = plus && reserved_[4] == 'D';
-    info_.format = bdf ? (plus ? Format::bdf_plus : Format::bdf)
-                       : (plus ? Format::edf_plus : Format::edf);
-    auto date = f.substr(168, 8), time = f.substr(176, 8);
-    if (date[2] != '.' || date[5] != '.' || time[2] != '.' || time[5] != '.')
-      throw Error("Invalid start date/time");
-    auto y = integer(date.substr(6, 2), "year");
-    y += y >= 85 ? 1900 : 2000;
-    auto d = std::chrono::year{static_cast<int>(y)} /
-             std::chrono::month{
-                 static_cast<unsigned>(integer(date.substr(3, 2), "month"))} /
-             std::chrono::day{
-                 static_cast<unsigned>(integer(date.substr(0, 2), "day"))};
-    auto hh = integer(time.substr(0, 2), "hour"),
-         mm = integer(time.substr(3, 2), "minute"),
-         ss = integer(time.substr(6, 2), "second");
-    if (!d.ok() || hh < 0 || hh > 23 || mm < 0 || mm > 59 || ss < 0 || ss > 59)
-      throw Error("Invalid start date/time");
-    info_.start = std::chrono::local_days{d} + std::chrono::hours{hh} +
-                  std::chrono::minutes{mm} + std::chrono::seconds{ss};
-    auto ns = integer(f.substr(252, 4), "signal count");
-    if (ns <= 0 || ns > 4096)
-      throw Error("Invalid signal count");
-    auto hb = integer(f.substr(184, 8), "header length");
-    if (hb != 256 + 256 * ns)
-      throw Error("Invalid header length");
-    header_bytes_ = static_cast<std::uint64_t>(hb);
-    const auto declared = integer(f.substr(236, 8), "record count");
-    if (declared < -1)
-      throw Error("Invalid record count");
-    info_.record_duration = ticks(f.substr(244, 8), "record duration");
-    if (info_.record_duration.count() < 0)
-      throw Error("Record duration must be nonnegative");
-    std::vector<char> raw(static_cast<std::size_t>(ns) * 256);
-    read_bytes(256, raw);
-    for (char c : raw)
-      if (static_cast<unsigned char>(c) < 32 ||
-          static_cast<unsigned char>(c) > 126)
-        throw Error("Non-ASCII signal header");
-    auto field = [&](std::size_t offset, std::size_t length, std::size_t i) {
-      return std::string_view(raw.data() + offset * ns + length * i, length);
-    };
-    for (std::size_t i = 0; i < static_cast<std::size_t>(ns); ++i) {
-      Channel c;
-      auto &s = c.spec;
-      s.label = trim(field(0, 16, i));
-      s.transducer = trim(field(16, 80, i));
-      s.unit = trim(field(96, 8, i));
-      s.physical_min = number(field(104, 8, i), "physical minimum");
-      s.physical_max = number(field(112, 8, i), "physical maximum");
-      auto mn = integer(field(120, 8, i), "digital minimum"),
-           mx = integer(field(128, 8, i), "digital maximum");
-      auto limit = bdf ? 8388608 : 32768;
-      if (mn < -limit || mx >= limit || mn >= mx)
-        throw Error("Invalid digital range");
-      s.digital_min = static_cast<std::int32_t>(mn);
-      s.digital_max = static_cast<std::int32_t>(mx);
-      if (s.physical_min == s.physical_max)
-        throw Error("Invalid physical range");
-      s.prefilter = trim(field(136, 80, i));
-      auto samples = integer(field(216, 8, i), "samples per record");
-      if (samples <= 0 || samples > (std::numeric_limits<std::uint32_t>::max)())
-        throw Error("Invalid samples per record");
-      s.samples_per_record = static_cast<std::uint32_t>(samples);
-      c.offset = record_bytes_;
-      record_bytes_ += product(static_cast<std::uint64_t>(samples), width_);
-      c.annotation =
-          plus && s.label == (bdf ? "BDF Annotations" : "EDF Annotations");
-      if (!c.annotation) {
-        data_channels_.push_back(channels_.size());
-        info_.signals.push_back(s);
-      }
-      channels_.push_back(std::move(c));
-    }
-    if (info_.record_duration.count() == 0 &&
-        (!plus || !data_channels_.empty()))
-      throw Error("Zero duration requires annotation-only EDF+");
-    if (record_bytes_ > width_ * (5u * 1024u * 1024u))
-      throw Error("Data record exceeds the EDFlib size limit");
-    const auto size = file_->size();
-    if (size < header_bytes_ || (size - header_bytes_) % record_bytes_)
-      throw Error("Incomplete data record");
-    records_ = (size - header_bytes_) / record_bytes_;
-    if (declared >= 0 && static_cast<std::uint64_t>(declared) != records_)
-      throw Error("Record count does not match file size");
-    if (discontinuous_) {
-      if (records_ > record_onsets_.max_size())
+    header_ = detail::read_header(*file_);
+    if (header_.discontinuous) {
+      if (header_.records > record_onsets_.max_size())
         throw Error("Too many data records");
-      record_onsets_.resize(static_cast<std::size_t>(records_));
+      record_onsets_.resize(static_cast<std::size_t>(header_.records));
     }
-    parse_identification();
-    cursors_.resize(data_channels_.size());
-    if (plus) {
-      if (std::none_of(channels_.begin(), channels_.end(),
-                       [](const Channel &c) { return c.annotation; }))
+    cursors_.resize(header_.data_channels.size());
+    if (header_.info.format == Format::edf_plus ||
+        header_.info.format == Format::bdf_plus) {
+      if (std::none_of(header_.channels.begin(), header_.channels.end(),
+                       [](const detail::Channel &c) { return c.annotation; }))
         throw Error("EDF+ requires an annotation signal");
       // EDFlib only honors the stop marker for a single annotation channel.
       if (mode == AnnotationMode::until_recording_ends &&
-          channels_.size() - data_channels_.size() > 1)
+          header_.channels.size() - header_.data_channels.size() > 1)
         mode = AnnotationMode::all;
       annotations_loaded_ = mode != AnnotationMode::lazy;
       bool stopped = false;
       std::vector<char> bytes;
       Tick previous{};
       const auto scan_records =
-          (!discontinuous_ &&
+          (!header_.discontinuous &&
            (mode == AnnotationMode::none || mode == AnnotationMode::lazy))
-              ? std::min<std::uint64_t>(1, records_)
-              : records_;
+              ? std::min<std::uint64_t>(1, header_.records)
+              : header_.records;
       for (std::uint64_t r = 0; r < scan_records; ++r) {
-        bool first = true;
-        for (const auto &c : channels_)
-          if (c.annotation) {
-            bytes.resize(static_cast<std::size_t>(c.spec.samples_per_record) *
-                         width_);
-            read_bytes(header_bytes_ + r * record_bytes_ + c.offset, bytes);
-            const bool stop = parse_tals(
-                bytes, r, first,
-                (stopped || mode == AnnotationMode::lazy) ? AnnotationMode::none
-                                                          : mode);
-            first = false;
-            stopped |= stop;
-            if (stopped || mode == AnnotationMode::none ||
-                mode == AnnotationMode::lazy)
-              break;
-          }
+        Tick onset{};
+        const auto scan_mode = stopped || mode == AnnotationMode::lazy
+                                   ? AnnotationMode::none
+                                   : mode;
+        if (read_annotation_record(r, scan_mode, bytes, onset))
+          stopped = true;
         if (r == 0) {
-          info_.subsecond = current_record_onset_;
-          if (info_.subsecond.count() < 0 ||
-              info_.subsecond.count() >= ticks_per_second)
+          header_.info.subsecond = onset;
+          if (header_.info.subsecond.count() < 0 ||
+              header_.info.subsecond.count() >= detail::ticks_per_second)
             throw Error("Invalid first record onset");
         }
-        if (r && previous.count() > (std::numeric_limits<std::int64_t>::max)() -
-                                        info_.record_duration.count())
-          throw Error("Record onset overflows");
-        if (r &&
-            (discontinuous_
-                 ? current_record_onset_ < previous + info_.record_duration
-                 : current_record_onset_ != previous + info_.record_duration))
-          throw Error("Invalid record onset sequence");
-        if (discontinuous_)
-          record_onsets_[r] = current_record_onset_;
-        previous = current_record_onset_;
-        if (stopped && !discontinuous_)
+        if (r)
+          validate_next_onset(previous, onset);
+        if (header_.discontinuous)
+          record_onsets_[r] = onset;
+        previous = onset;
+        if (stopped && !header_.discontinuous)
           break;
       }
       normalize_annotations();
@@ -782,9 +399,9 @@ private:
   }
 
 public:
-  const RecordingInfo &header() const noexcept { return info_; }
+  const RecordingInfo &header() const noexcept { return header_.info; }
   const std::vector<SignalSpec> &signals() const noexcept {
-    return info_.signals;
+    return header_.info.signals;
   }
   const std::vector<Annotation> &annotations() const {
     std::lock_guard lock(*annotation_mutex_);
@@ -793,27 +410,13 @@ public:
       try {
         std::vector<char> bytes;
         Tick previous{};
-        for (std::uint64_t r = 0; r < records_; ++r) {
+        for (std::uint64_t r = 0; r < header_.records; ++r) {
           record = r;
-          bool first = true;
-          for (const auto &c : channels_)
-            if (c.annotation) {
-              bytes.resize(static_cast<std::size_t>(c.spec.samples_per_record) *
-                           width_);
-              read_bytes(header_bytes_ + r * record_bytes_ + c.offset, bytes);
-              parse_tals(bytes, r, first, AnnotationMode::all);
-              first = false;
-            }
-          if (r &&
-              previous.count() > (std::numeric_limits<std::int64_t>::max)() -
-                                     info_.record_duration.count())
-            throw Error("Record onset overflows");
-          if (r &&
-              (discontinuous_
-                   ? current_record_onset_ < previous + info_.record_duration
-                   : current_record_onset_ != previous + info_.record_duration))
-            throw Error("Invalid record onset sequence");
-          previous = current_record_onset_;
+          Tick onset{};
+          read_annotation_record(r, AnnotationMode::all, bytes, onset);
+          if (r)
+            validate_next_onset(previous, onset);
+          previous = onset;
         }
         normalize_annotations();
         annotations_loaded_ = true;
@@ -834,19 +437,22 @@ public:
   const std::vector<Tick> &record_onsets() const noexcept {
     return record_onsets_;
   }
-  std::uint64_t record_count() const noexcept { return records_; }
-  bool discontinuous() const noexcept { return discontinuous_; }
+  std::uint64_t record_count() const noexcept { return header_.records; }
+  bool discontinuous() const noexcept { return header_.discontinuous; }
   std::uint64_t sample_count(std::size_t id) const {
-    return product(records_, channel(id).spec.samples_per_record);
+    return detail::product(header_.records,
+                           channel(id).spec.samples_per_record);
   }
   // Elapsed from the first record, including any discontinuities.
   Tick record_start(std::uint64_t record) const {
-    if (record >= records_)
+    if (record >= header_.records)
       throw Error("Record index out of range");
-    if (discontinuous_)
-      return record_onsets_[static_cast<std::size_t>(record)] - info_.subsecond;
-    const auto duration = info_.record_duration.count();
-    if (duration && record > static_cast<std::uint64_t>((Tick::max)().count() / duration))
+    if (header_.discontinuous)
+      return record_onsets_[static_cast<std::size_t>(record)] -
+             header_.info.subsecond;
+    const auto duration = header_.info.record_duration.count();
+    if (duration &&
+        record > static_cast<std::uint64_t>((Tick::max)().count() / duration))
       throw Error("Record start exceeds Tick range");
     return Tick{static_cast<std::int64_t>(record) * duration};
   }
@@ -857,19 +463,20 @@ public:
     const auto spr = channel(id).spec.samples_per_record;
     if (time < Tick::zero())
       throw Error("Negative sample lookup time");
-    if (!records_)
+    if (!header_.records)
       return 0;
-    const auto duration = info_.record_duration.count();
+    const auto duration = header_.info.record_duration.count();
     std::uint64_t record;
-    if (discontinuous_) {
-      auto next = std::upper_bound(
-          record_onsets_.begin(), record_onsets_.end(), time,
-          [&](Tick t, Tick onset) { return t < onset - info_.subsecond; });
+    if (header_.discontinuous) {
+      auto next = std::upper_bound(record_onsets_.begin(), record_onsets_.end(),
+                                   time, [&](Tick t, Tick onset) {
+                                     return t < onset - header_.info.subsecond;
+                                   });
       record = static_cast<std::uint64_t>(next - record_onsets_.begin() - 1);
     } else {
       record = static_cast<std::uint64_t>(time.count() / duration);
     }
-    if (record >= records_)
+    if (record >= header_.records)
       return sample_count(id);
     const auto delta = (time - record_start(record)).count();
     if (delta >= duration)
@@ -881,17 +488,17 @@ public:
 
   double sample_rate(std::size_t id) const {
     return static_cast<double>(channel(id).spec.samples_per_record) *
-           ticks_per_second / info_.record_duration.count();
+           detail::ticks_per_second / header_.info.record_duration.count();
   }
   std::size_t select_unique(std::string_view label) const {
-    std::size_t found = info_.signals.size();
-    for (std::size_t i = 0; i < info_.signals.size(); ++i)
-      if (info_.signals[i].label == label) {
-        if (found != info_.signals.size())
+    std::size_t found = header_.info.signals.size();
+    for (std::size_t i = 0; i < header_.info.signals.size(); ++i)
+      if (header_.info.signals[i].label == label) {
+        if (found != header_.info.signals.size())
           throw Error("Signal label is ambiguous");
         found = i;
       }
-    if (found == info_.signals.size())
+    if (found == header_.info.signals.size())
       throw Error("Signal label not found");
     return found;
   }

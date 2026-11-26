@@ -1,5 +1,7 @@
 #pragma once
 #include <chrono>
+#include <concepts>
+#include <cstddef>
 #include <cstdint>
 #include <ctime>
 #include <optional>
@@ -11,6 +13,22 @@
 #include <vector>
 
 namespace fastbdf {
+template <class T>
+concept DigitalSample =
+    std::same_as<T, std::int16_t> || std::same_as<T, std::int32_t>;
+
+template <class T>
+concept PhysicalSample = std::same_as<T, float> || std::same_as<T, double>;
+
+enum class AnnotationMode { none, lazy, all, until_recording_ends };
+enum class AnnotationPosition { start, middle, end };
+
+struct WriterOptions {
+  std::size_t annotation_signals = 1;
+  std::size_t annotation_bytes_per_signal = 240;
+  AnnotationPosition annotation_position = AnnotationPosition::end;
+};
+
 enum class Format { edf, bdf, edf_plus, bdf_plus };
 using Tick = std::chrono::duration<std::int64_t, std::ratio<1, 10'000'000>>;
 struct TimeRange {
