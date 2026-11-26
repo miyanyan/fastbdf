@@ -1,6 +1,6 @@
 # EDFlib 1.27 功能对照
 
-基线为 EDFlib v1.27 和 fastbdf 提交 `72e7ff3`。下表收录上游头文件中全部 **50 个不同名称的公开函数**，包括废弃别名；同名的编译器条件声明计一次。比较目标是 C++ 调用方可用的功能、生成的文件和读回结果。C ABI、全局句柄编号和整数错误码不作为替代接口承诺。[上游头文件](https://gitlab.com/Teuniz/EDFlib/-/blob/v1.27/edflib.h) · [上游实现](https://gitlab.com/Teuniz/EDFlib/-/blob/v1.27/edflib.c)
+基线为 EDFlib v1.27；样本写入测试对应 fastbdf 提交 `6370cde`。下表收录上游头文件中全部 **50 个不同名称的公开函数**，包括废弃别名；同名的编译器条件声明计一次。比较目标是 C++ 调用方可用的功能、生成的文件和读回结果。C ABI、全局句柄编号和整数错误码不作为替代接口承诺。[上游头文件](https://gitlab.com/Teuniz/EDFlib/-/blob/v1.27/edflib.h) · [上游实现](https://gitlab.com/Teuniz/EDFlib/-/blob/v1.27/edflib.c)
 
 **互验**表示现有测试已用真实 EDFlib 对照该行注明的结果；**原生**表示有 fastbdf 自身断言；**待验**表示有实现或组合用法，但缺少所列行为的直接对照；**差异**表示源码或测试已经能确认行为不同。同一行可以同时有已验证的正常路径和待验证的边界。
 
@@ -24,7 +24,7 @@
 | EDFlib 入口 | fastbdf 字段或选项 | 已有证据或差异 |
 |---|---|---|
 | `edf_set_samplefrequency` | `SignalSpec::samples_per_record` | **互验**。值是每条数据记录的采样点数。测试使用 0.5 秒记录、每通道分别 7 和 3 点；实际 Hz 由 `sample_rate(id)` 返回。 |
-| `edf_set_physical_minimum`、`edf_set_physical_maximum`、`edf_set_digital_minimum`、`edf_set_digital_maximum` | `SignalSpec::physical_min/physical_max/digital_min/digital_max` | **互验**。既对照头部四个端点，也对照样本标定结果。负增益和量化临界值的组合仍可扩充。 |
+| `edf_set_physical_minimum`、`edf_set_physical_maximum`、`edf_set_digital_minimum`、`edf_set_digital_maximum` | `SignalSpec::physical_min/physical_max/digital_min/digital_max` | **互验**。既对照头部四个端点，也对照样本标定结果。负增益用例另核对整数码阈值两侧的相邻浮点数和非对称标定端点。 |
 | `edf_set_label`、`edf_set_physical_dimension` | `SignalSpec::label/unit` | **互验**已有 ASCII 标签和单位样例。**待验**：字段宽度边界及不同输入编码。 |
 | `edf_set_prefilter`、`edf_set_transducer` | `SignalSpec::prefilter/transducer` | **原生**有读回传感器文字的断言；**待验**两字段的非空值经两个写入方向逐字段比较。 |
 | `edf_set_startdatetime`、`edf_set_subsecond_starttime` | `RecordingInfo::start/subsecond` | **互验**亚秒起点和相对事件时间；**待验**两边显式设置同一日历时间并比较全部日期时间分量。 |
@@ -39,18 +39,17 @@
 
 | EDFlib 入口 | fastbdf 用法 | 已有证据或差异 |
 |---|---|---|
-| `edfwrite_digital_samples`、`edf_blockwrite_digital_samples` | `Writer::write_digital_samples/write_digital_record` | **互验**。上游逐通道写与 fastbdf 整记录写生成的样本均经双库核对，覆盖 BDF 有符号端点。**待验**同输入直接对照上游 block 入口。 |
-| `edfwrite_physical_samples`、`edf_blockwrite_physical_samples` | `Writer::write_physical_samples/write_physical_record` | **互验**。上游逐通道写与 fastbdf 整记录写后比较数字码，已有饱和、截断样例。**待验**两个 block 入口直接对照，以及负增益下相邻量化码的边界。 |
-| `edfwrite_digital_short_samples`、`edf_blockwrite_digital_short_samples` | `Writer::write_short_samples/write_short_record` | **差异**。上游两个 short 入口只接受 EDF 系列；fastbdf 也可将 int16 输入写为 24 位 BDF。**原生**覆盖 BDF 整记录；**待验**共同支持的 EDF+ 逐通道和整记录路径。 |
-| `edf_blockwrite_digital_3byte_samples` | `Writer::write_packed_record`，传入一条记录普通通道的小端字节 | **互验**。EDFlib 能从 fastbdf 的 packed 文件读回有符号端点；**待验**将同一字节缓冲区交给上游 3-byte 写入口，对照产物。 |
+| `edfwrite_digital_samples`、`edf_blockwrite_digital_samples` | `Writer::write_digital_samples/write_digital_record` | **互验**。上游逐通道写与 fastbdf 整记录写生成的样本均经双库核对，覆盖 BDF 有符号端点。BDF+ 的 int32 block 入口也已用同输入核对，包括超出 24 位范围一档的饱和。 |
+| `edfwrite_physical_samples`、`edf_blockwrite_physical_samples` | `Writer::write_physical_samples/write_physical_record` | **互验**。上游逐通道写与 fastbdf 整记录写后比较数字码，已有饱和、截断样例。EDF+、BDF+ 的逐通道与 block 入口已分别对照，覆盖负增益量化边界及浮点换算产生的端点偏差。 |
+| `edfwrite_digital_short_samples`、`edf_blockwrite_digital_short_samples` | `Writer::write_short_samples/write_short_record` | **差异**。上游两个 short 入口只接受 EDF 系列；fastbdf 也可将 int16 输入写为 24 位 BDF。**原生**覆盖 BDF 整记录；**互验**共同支持的 EDF+ 逐通道和整记录路径，覆盖 int16 端点及窄标定范围的饱和。 |
+| `edf_blockwrite_digital_3byte_samples` | `Writer::write_packed_record`，传入一条记录普通通道的小端字节 | **互验**。EDFlib 能从 fastbdf 的 packed 文件读回有符号端点；同一小端缓冲区也已交给上游 3-byte 写入口，两套读取器逐点验证两份文件。 |
 | `edf_get_annotation` | `Reader::annotations()` 返回事件序列，元素包含 `onset/duration/text` | **互验**。包括空正文、零时长与缺失时长、亚秒起点、原始字节、超 512 字节正文后的下一条事件。见 `annotation_edges`、`verify_writer_formats`。 |
 | `edfwrite_annotation_utf8_hr`、`edfwrite_annotation_utf8` | `Writer::add_annotation`，以 `Tick` 表示时间，正文为 `std::string` | **互验**高精度入口的共同时值及正文处理：取前 40 字节、NUL 终止、低位控制字符替换为句点。上游两个入口分别采用 µs、100 µs；**待验**旧入口的单位换算和负起点的接受行为。 |
 | `edfwrite_annotation_latin1_hr`、`edfwrite_annotation_latin1` | 调用方先将 Latin-1 转为目标字节，再调用 `add_annotation` | **有意差异**。库内没有自动转换注释的入口。若要复现上游对超长 Latin-1 输入的结果，还要考虑上游转换缓冲区与截断顺序。 |
 
 ## 下一批互操作用例
 
-1. **优先验证样本值。** 在相同标定下分别经逐通道、整记录和 packed 接口写入。覆盖 EDF+ short、BDF+ 24 位端点及其相邻值、负增益，以及量化分界线两侧的浮点输入。逐点比较读回的数字码。
-2. **验证位置和时间。** 对混合采样率通道交错执行合法的起点、当前位置和末尾定位，覆盖跨记录、短读和 EOF；对越界分别断言两个库已知的行为。再用非整秒记录和亚秒起点核对普通与高精度注释入口。
-3. **补全头部字段。** 固定起始日期时间，填入非空的传感器、预滤波、管理员代码、技师和出生日期。两个写入方向都逐字段比较，并校验不同注释通道位置下的信号顺序。
+1. **验证位置和时间。** 对混合采样率通道交错执行合法的起点、当前位置和末尾定位，覆盖跨记录、短读和 EOF；对越界分别断言两个库已知的行为。再用非整秒记录和亚秒起点核对普通与高精度注释入口。
+2. **补全头部字段。** 固定起始日期时间，填入非空的传感器、预滤波、管理员代码、技师和出生日期。两个写入方向都逐字段比较，并校验不同注释通道位置下的信号顺序。
 
-证据入口：双库对照见 [interop.cpp](../tests/interop.cpp)，原生断言见 [reader.cpp](../tests/reader.cpp)、[writer.cpp](../tests/writer.cpp) 和 [native.cpp](../tests/native.cpp)。实现入口为 [Reader](../include/fastbdf/reader.hpp)、[Writer](../include/fastbdf/writer.hpp)、[公共数据类型](../include/fastbdf/types.hpp) 和 [FileSet](../include/fastbdf/file_set.hpp)。
+证据入口：写入数字码的四路读回见 [write_codes.cpp](../tests/write_codes.cpp)，其余双库对照见 [interop.cpp](../tests/interop.cpp)，原生断言见 [reader.cpp](../tests/reader.cpp)、[writer.cpp](../tests/writer.cpp) 和 [native.cpp](../tests/native.cpp)。实现入口为 [Reader](../include/fastbdf/reader.hpp)、[Writer](../include/fastbdf/writer.hpp)、[公共数据类型](../include/fastbdf/types.hpp) 和 [FileSet](../include/fastbdf/file_set.hpp)。

@@ -74,7 +74,7 @@ writer.finish();
 | 经典 EDF、BDF | 读写 16 位或 24 位小端信号，保留经典 patient 和 recording 字段 |
 | 连续 EDF+、BDF+ | 读写结构化元数据、负增益、亚秒起点、混合采样率、UTF-8 事件、多注释通道及仅含注释的文件 |
 | 不连续 EDF+D、BDF+D | 可读取有正记录时长的波形，`record_start(r)` 返回考虑间断后的相对时间。时间窗跳过间断，不填充样本。Writer 输出连续记录。零记录时长仅支持纯注释文件 |
-| 数值 | digital 输出按头部数字范围截断；physical 依据头部标定转换。physical 写入在边界饱和，区间内换算后向零取整。packed 写保留输入字节 |
+| 数值 | digital 输出按头部数字范围截断；physical 依据头部标定转换。physical 写入按标定换算后向零取整并限制数字范围；浮点舍入可能让恰在物理端点的值向零偏一个数字码。packed 写保留输入字节 |
 | 时间与编码 | `Tick` 精度为 100 ns。事件缺失时长用 `std::nullopt`，零时长用 `Tick{0}`。事件正文统一使用 `std::string`。调用方负责提供符合 EDF+ 规范的 UTF-8 字节。头部字段为可打印 ASCII，可用 `header_text_from_latin1` 转换遗留字符串 |
 | 注释读取 | 默认 `lazy` 在首次访问 `annotations()` 时加载。`none` 跳过事件，`all` 在打开时加载全部，`until_recording_ends` 复现 EDFlib 的停止标记规则。延迟加载时，连续记录的首次打开只需读取头部和第一条记录的计时信息；不连续记录要建立时间索引 |
 | 错误与句柄 | 捕获 `fastbdf::Error` 并查看 `code()`。原生入口使用 RAII。如需文件计数、按路径查找和枚举句柄，可包含 `<fastbdf/file_set.hpp>`，用同一个 `FileSet` 打开、创建和关闭这些文件 |
