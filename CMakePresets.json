@@ -21,6 +21,8 @@
   "testPresets": [
     {"name": "mne", "configurePreset": "mne", "configuration": "Release",
      "filter": {"include": {"name": "^mne_compare$"}}, "output": {"outputOnFailure": true}},
+    {"name": "python-binding", "configurePreset": "mne", "configuration": "Release",
+     "filter": {"include": {"name": "^python_binding$"}}, "output": {"outputOnFailure": true}},
     {"name": "mne-bench", "configurePreset": "mne", "configuration": "Release",
      "filter": {"include": {"name": "^mne_bench$"}}, "output": {"verbosity": "verbose"}},
     {"name": "dev", "configurePreset": "dev", "configuration": "Release",

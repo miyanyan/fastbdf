@@ -1,0 +1,14 @@
+[build-system]
+requires = ["scikit-build-core>=1.0", "nanobind>=3.1,<4"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "fastbdf"
+version = "0.1.0"
+description = "Native EDF and BDF signal reader for NumPy"
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.26"]
+
+[tool.scikit-build]
+cmake.source-dir = "python"
+wheel.packages = []

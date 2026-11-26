@@ -42,3 +42,4 @@ jobs:
           environments: mne
           locked: true
       - run: pixi run --locked -e mne test-mne
+      - run: pixi run --locked -e mne test-binding

@@ -92,6 +92,25 @@ EDFlib 的 `*_hr` 注释写函数接收微秒，旧函数接收 100 微秒单位
 - 事件正文按 EDFlib 1.27 的字节规则处理。写入最多取 40 字节，遇到 NUL 提前结束，其余小于 0x20 的字节替换为句点。读取最多返回 512 字节，允许 TAB、LF、CR，拒绝正文中其余 ASCII 控制字符及 DEL。两端均不校验或转换 UTF-8，按字节截断可能切开多字节字符。结构化患者和记录字段中的附加说明保留原有下划线及内部空格。
 - 有波形通道的文件必须写完至少一条记录才能成功 `finish()`。可在补齐后重试。
 
+## Python / NumPy 读取
+
+从源码目录运行 `python -m pip install .`，需要 C++20 编译器。Python 扩展使用 nanobind；C++ 用户仍可直接包含头文件。当前 Python 接口提供 Reader，可读取 EDF、BDF 和 Plus 文件。
+
+```python
+import fastbdf
+import numpy as np
+
+with fastbdf.Reader("recording.bdf") as reader:
+    signal = reader.signals[0]
+    codes = np.empty(1024, dtype=np.int32)
+    n = reader.read_digital_into(0, 0, codes)
+    first_second = reader.read_physical_window([0, 1], 0, 10_000_000)
+```
+
+`read_digital_into` 和 `read_physical_into` 从通道的原始样本下标开始，返回实际写入点数。使用可写、连续、对齐的 NumPy 数组，数字码用 `int32`，物理值用 `float64`，单位见 `signal.unit`。时间窗使用 100 ns 的整数 tick，包含起点并排除终点。各通道样本数相同时，`read_physical_window_into(ids, start_tick, stop_tick, out)` 可直接填充形状为「通道数 × 样本数」的二维数组。混合采样率可用 `read_physical_window`，按请求顺序返回独立的一维数组。I/O 期间释放 GIL，并发请求应使用独立的输出缓冲区。
+
+Python 默认打开时解析事件。`reader.annotations` 的元素是 `(onset_ticks, duration_ticks_or_None, text_bytes)`，也可在打开时指定 `annotation_mode=fastbdf.AnnotationMode.lazy`。构建、测试及基准命令见 [Python 绑定与 MNE 性能对照](docs/python-benchmark.md)。
+
 ## 与 MNE-Python 对照
 
 正确性测试读取 fastbdf 生成的 EDF、BDF、EDF+ 和 BDF+，逐通道核对采样率、样本数、物理量和读取窗口，并比较 Plus 文件的事件文本、起点和持续时间。反向测试用 MNE 和 edfio 导出 EDF，再由 fastbdf 读取，并按 EDF 的量化精度与原始浮点信号比较。

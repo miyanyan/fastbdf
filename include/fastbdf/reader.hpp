@@ -444,12 +444,31 @@ class Reader {
     }
     return written;
   }
+  using SampleBounds = std::pair<std::uint64_t, std::uint64_t>;
   template <class T>
+  static void prepare_window(std::vector<std::vector<T>> &out,
+                             const std::vector<SampleBounds> &bounds) {
+    out.resize(bounds.size());
+    for (std::size_t i = 0; i < bounds.size(); ++i)
+      out[i].resize(
+          static_cast<std::size_t>(bounds[i].second - bounds[i].first));
+  }
+  template <class T>
+  static void prepare_window(std::span<std::span<T>> out,
+                             const std::vector<SampleBounds> &bounds) {
+    if (out.size() != bounds.size())
+      throw Error("Window output must have one row per requested signal");
+    for (std::size_t i = 0; i < bounds.size(); ++i)
+      if (out[i].size() != bounds[i].second - bounds[i].first)
+        throw Error("Window output length differs from native sample count");
+  }
+  template <class Rows>
   void window_into(std::span<const std::size_t> signals, TimeRange range,
-                   std::vector<std::vector<T>> &result) const {
+                   Rows &result) const {
+    using T = typename Rows::value_type::value_type;
     if (range.begin.count() < 0 || range.end < range.begin)
       throw Error("Invalid time range");
-    std::vector<std::pair<std::uint64_t, std::uint64_t>> bounds;
+    std::vector<SampleBounds> bounds;
     bounds.reserve(signals.size());
     std::uint64_t selected_bytes = 0, first_record = records_, end_record = 0;
     for (auto id : signals) {
@@ -465,10 +484,7 @@ class Reader {
         end_record = (std::max)(end_record, (hi - 1) / spr + 1);
       }
     }
-    result.resize(signals.size());
-    for (std::size_t i = 0; i < signals.size(); ++i)
-      result[i].resize(
-          static_cast<std::size_t>(bounds[i].second - bounds[i].first));
+    prepare_window(result, bounds);
     if (first_record >= end_record)
       return;
     if (signals.size() == 1 || selected_bytes < record_bytes_ / 4) {
@@ -938,6 +954,11 @@ public:
   }
   void read_physical_into(std::span<const std::size_t> ids, TimeRange range,
                           std::vector<std::vector<double>> &out) const {
+    window_into(ids, range, out);
+  }
+  // Read directly into caller-owned rows. Validate all lengths before decoding.
+  void read_physical_into(std::span<const std::size_t> ids, TimeRange range,
+                          std::span<std::span<double>> out) const {
     window_into(ids, range, out);
   }
 };

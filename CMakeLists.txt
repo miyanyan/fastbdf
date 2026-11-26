@@ -55,6 +55,8 @@ if(FASTBDF_MNE)
     endforeach()
     add_test(NAME mne_compare COMMAND Python3::Interpreter
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/mne_compare.py" $<TARGET_FILE:fastbdf_mne_probe>)
+    add_test(NAME python_binding COMMAND Python3::Interpreter
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/python_binding.py" $<TARGET_FILE:fastbdf_mne_probe>)
     add_test(NAME mne_bench COMMAND Python3::Interpreter
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/mne_bench.py" $<TARGET_FILE:fastbdf_mne_bench>)
     set_tests_properties(mne_bench PROPERTIES LABELS benchmark)
