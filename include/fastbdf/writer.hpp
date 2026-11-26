@@ -5,6 +5,7 @@
 #include <array>
 #include <charconv>
 #include <cmath>
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -12,12 +13,27 @@
 #include <limits>
 #include <map>
 #include <optional>
+#include <ranges>
 #include <span>
 #include <string>
 #include <string_view>
 #include <vector>
 
 namespace fastbdf {
+
+template <class T>
+concept DigitalSample = std::same_as<T, std::int16_t> ||
+                        std::same_as<T, std::int32_t>;
+
+template <class T>
+concept PhysicalSample = std::same_as<T, float> || std::same_as<T, double>;
+
+template <class R>
+concept SampleRange =
+    std::ranges::contiguous_range<const R> && std::ranges::sized_range<const R> &&
+    (DigitalSample<std::ranges::range_value_t<const R>> ||
+     PhysicalSample<std::ranges::range_value_t<const R>>) &&
+    requires(const R &r) { std::span<const std::ranges::range_value_t<const R>>{r}; };
 
 enum class AnnotationPosition { start, middle, end };
 
@@ -46,44 +62,22 @@ public:
   std::uint64_t records_written() const noexcept { return records_; }
   bool finished() const noexcept { return finished_; }
 
+  template <SampleRange R> void write_samples(const R &samples) {
+    write_samples(next_signal_, samples);
+  }
+  template <SampleRange R>
+  void write_samples(std::size_t channel, const R &samples) {
+    using T = std::ranges::range_value_t<const R>;
+    write_channel(channel, std::span<const T>{samples});
+  }
   void write_digital_record(std::span<const std::int32_t> samples) {
-    write_record(samples,
-                 [this](auto x, const auto &s) { return digital(x, s); });
+    write_record(samples);
   }
   void write_short_record(std::span<const std::int16_t> samples) {
-    write_record(samples,
-                 [this](auto x, const auto &s) { return digital(x, s); });
+    write_record(samples);
   }
   void write_physical_record(std::span<const double> samples) {
-    write_record(samples,
-                 [this](auto x, const auto &s) { return physical(x, s); });
-  }
-  void write_digital_samples(std::span<const std::int32_t> samples) {
-    write_channel(next_signal_, samples,
-                  [this](auto x, const auto &s) { return digital(x, s); });
-  }
-  void write_short_samples(std::span<const std::int16_t> samples) {
-    write_channel(next_signal_, samples,
-                  [this](auto x, const auto &s) { return digital(x, s); });
-  }
-  void write_physical_samples(std::span<const double> samples) {
-    write_channel(next_signal_, samples,
-                  [this](auto x, const auto &s) { return physical(x, s); });
-  }
-  void write_digital_samples(std::size_t channel,
-                             std::span<const std::int32_t> samples) {
-    write_channel(channel, samples,
-                  [this](auto x, const auto &s) { return digital(x, s); });
-  }
-  void write_short_samples(std::size_t channel,
-                           std::span<const std::int16_t> samples) {
-    write_channel(channel, samples,
-                  [this](auto x, const auto &s) { return digital(x, s); });
-  }
-  void write_physical_samples(std::size_t channel,
-                              std::span<const double> samples) {
-    write_channel(channel, samples,
-                  [this](auto x, const auto &s) { return physical(x, s); });
+    write_record(samples);
   }
   void write_packed_record(std::span<const std::byte> bytes) {
     ensure_open();
@@ -106,7 +100,7 @@ public:
     if (auto end = text.find('\0'); end != text.npos)
       text.resize(end);
     for (char &c : text)
-      if (static_cast<unsigned char>(c) < 32)
+      if (static_cast<unsigned char>(c) < 32 || c == '\x7f')
         c = '.';
     annotations_.push_back(std::move(annotation));
   }
@@ -293,10 +287,11 @@ private:
     s.append("\x14\0", 2);
     return s;
   }
-  std::int32_t digital(std::int32_t x, const SignalSpec &s) const {
-    return std::clamp(x, s.digital_min, s.digital_max);
+  static std::int32_t to_digital(DigitalSample auto x, const SignalSpec &s) {
+    return std::clamp<std::int32_t>(x, s.digital_min, s.digital_max);
   }
-  std::int32_t physical(double x, const SignalSpec &s) const {
+  static std::int32_t to_digital(PhysicalSample auto sample, const SignalSpec &s) {
+    const double x = sample;
     if (!std::isfinite(x))
       fail("non-finite physical sample");
     if (s.physical_min < s.physical_max) {
@@ -325,11 +320,11 @@ private:
     return static_cast<std::int32_t>(
         std::clamp(value, double(s.digital_min), double(s.digital_max)));
   }
-  template <std::size_t Width, class T, class Convert>
+  template <std::size_t Width, class T>
   static void encode(std::span<const T> samples, const SignalSpec &signal,
-                     char *dest, Convert convert) {
+                     char *dest) {
     for (auto sample : samples) {
-      const auto bits = static_cast<std::uint32_t>(convert(sample, signal));
+      const auto bits = static_cast<std::uint32_t>(to_digital(sample, signal));
       dest[0] = static_cast<char>(bits);
       dest[1] = static_cast<char>(bits >> 8);
       if constexpr (Width == 3)
@@ -337,16 +332,16 @@ private:
       dest += Width;
     }
   }
-  template <class T, class Convert>
+  template <class T>
   void encode_channel(std::span<const T> samples, const SignalSpec &signal,
-                      char *dest, Convert convert) const {
+                      char *dest) const {
     if (sample_bytes_ == 3)
-      encode<3>(samples, signal, dest, convert);
+      encode<3>(samples, signal, dest);
     else
-      encode<2>(samples, signal, dest, convert);
+      encode<2>(samples, signal, dest);
   }
-  template <class T, class Convert>
-  void write_record(std::span<const T> samples, Convert convert) {
+  template <class T>
+  void write_record(std::span<const T> samples) {
     ensure_open();
     if (next_signal_ || samples.size() != data_bytes_ / sample_bytes_)
       fail("record sample count or channel order mismatch");
@@ -354,14 +349,13 @@ private:
     std::size_t pos = 0;
     for (const auto &signal : info_.signals) {
       encode_channel(samples.subspan(pos, signal.samples_per_record), signal,
-                     encoded_.data() + pos * sample_bytes_, convert);
+                     encoded_.data() + pos * sample_bytes_);
       pos += signal.samples_per_record;
     }
     emit_record(encoded_.data());
   }
-  template <class T, class Convert>
-  void write_channel(std::size_t channel, std::span<const T> samples,
-                     Convert convert) {
+  template <class T>
+  void write_channel(std::size_t channel, std::span<const T> samples) {
     ensure_open();
     if (channel != next_signal_ || channel >= info_.signals.size())
       fail("signals must be written in header order");
@@ -369,7 +363,7 @@ private:
     if (samples.size() != s.samples_per_record)
       fail("channel sample count mismatch");
     encoded_.resize(samples.size() * sample_bytes_);
-    encode_channel(samples, s, encoded_.data(), convert);
+    encode_channel(samples, s, encoded_.data());
     pending_.insert(pending_.end(), encoded_.begin(), encoded_.end());
     if (++next_signal_ == info_.signals.size()) {
       emit_record(pending_.data());
@@ -491,9 +485,7 @@ private:
       };
       s.physical_min = parse(decimal(s.physical_min));
       s.physical_max = parse(decimal(s.physical_max));
-      auto label = std::string_view(s.label);
-      while (!label.empty() && label.back() == ' ')
-        label.remove_suffix(1);
+      const auto label = detail::trim_spaces(s.label);
       if (label == "EDF Annotations" || label == "BDF Annotations")
         fail("reserved annotation label");
       if (s.samples_per_record >

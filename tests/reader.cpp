@@ -141,7 +141,7 @@ int main() {
     fixture(path, false, true);
     auto extreme = Reader::open(path);
     std::array<double, 4> physical{};
-    extreme.read_physical_at(0, 0, physical);
+    extreme.read_at(0, 0, physical);
     check(physical == std::array<double, 4>{-1e308, 0, 1e308, 0},
           "stable extreme interpolation");
     fixture(path);

@@ -5,6 +5,7 @@
 #include <array>
 #include <charconv>
 #include <cmath>
+#include <concepts>
 #include <filesystem>
 #include <initializer_list>
 #include <ios>
@@ -14,10 +15,15 @@
 #include <span>
 #include <string_view>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 namespace fastbdf {
 enum class AnnotationMode { none, lazy, all, until_recording_ends };
+
+template <class R>
+concept SampleOutput = std::convertible_to<R, std::span<std::int32_t>> ||
+                       std::convertible_to<R, std::span<double>>;
 
 // Position-independent reads and independent Cursor objects may run
 // concurrently. Reopening the reader and its legacy implicit cursors require
@@ -46,11 +52,7 @@ class Reader {
   static constexpr std::int64_t ticks_per_second = 10000000;
 
   static std::string trim(std::string_view s) {
-    while (!s.empty() && s.back() == ' ')
-      s.remove_suffix(1);
-    while (!s.empty() && s.front() == ' ')
-      s.remove_prefix(1);
-    return std::string(s);
+    return std::string(detail::trim_spaces(s));
   }
   static std::int64_t integer(std::string_view s, const char *field) {
     auto t = trim(s);
@@ -365,6 +367,10 @@ class Reader {
       const auto value = std::clamp(raw, s.digital_min, s.digital_max);
       if constexpr (std::is_same_v<T, std::int32_t>)
         sample = value;
+      else if (value == s.digital_min)
+        sample = s.physical_min;
+      else if (value == s.digital_max)
+        sample = s.physical_max;
       else if (std::isfinite(gain))
         sample = s.physical_min +
                  (static_cast<double>(value) - s.digital_min) * gain;
@@ -377,8 +383,8 @@ class Reader {
     }
   }
   template <class T>
-  std::size_t read_at(std::size_t signal, std::uint64_t first,
-                      std::span<T> out) const {
+  std::size_t read_at_impl(std::size_t signal, std::uint64_t first,
+                           std::span<T> out) const {
     const auto &ch = channel(signal);
     const auto total = sample_count(signal);
     if (first > total)
@@ -569,13 +575,8 @@ public:
         seek(base + positive);
       }
     }
-    std::size_t read_digital(std::span<std::int32_t> out) {
-      auto n = reader_->read_digital_at(id_, position_, out);
-      position_ += n;
-      return n;
-    }
-    std::size_t read_physical(std::span<double> out) {
-      auto n = reader_->read_physical_at(id_, position_, out);
+    template <SampleOutput R> std::size_t read(R &&out) {
+      auto n = reader_->read_at(id_, position_, std::forward<R>(out));
       position_ += n;
       return n;
     }
@@ -715,11 +716,6 @@ private:
     records_ = (size - header_bytes_) / record_bytes_;
     if (declared >= 0 && static_cast<std::uint64_t>(declared) != records_)
       throw Error("Record count does not match file size");
-    if (info_.record_duration.count() &&
-        records_ > static_cast<std::uint64_t>(
-                       (std::numeric_limits<std::int64_t>::max)() /
-                       info_.record_duration.count()))
-      throw Error("Recording duration overflows");
     if (discontinuous_) {
       if (records_ > record_onsets_.max_size())
         throw Error("Too many data records");
@@ -849,8 +845,10 @@ public:
       throw Error("Record index out of range");
     if (discontinuous_)
       return record_onsets_[static_cast<std::size_t>(record)] - info_.subsecond;
-    return Tick{static_cast<std::int64_t>(record) *
-                info_.record_duration.count()};
+    const auto duration = info_.record_duration.count();
+    if (duration && record > static_cast<std::uint64_t>((Tick::max)().count() / duration))
+      throw Error("Record start exceeds Tick range");
+    return Tick{static_cast<std::int64_t>(record) * duration};
   }
 
   // A time inside a gap maps to the next sample. Beyond EOF returns
@@ -920,21 +918,16 @@ public:
     channel(id);
     return cursors_[id];
   }
-  std::size_t read_digital_at(std::size_t id, std::uint64_t first,
-                              std::span<std::int32_t> out) const {
-    return read_at(id, first, out);
+  std::size_t read_at(std::size_t id, std::uint64_t first,
+                      std::span<std::int32_t> out) const {
+    return read_at_impl(id, first, out);
   }
-  std::size_t read_physical_at(std::size_t id, std::uint64_t first,
-                               std::span<double> out) const {
-    return read_at(id, first, out);
+  std::size_t read_at(std::size_t id, std::uint64_t first,
+                      std::span<double> out) const {
+    return read_at_impl(id, first, out);
   }
-  std::size_t read_digital(std::size_t id, std::span<std::int32_t> out) {
-    auto n = read_at(id, tell(id), out);
-    cursors_[id] += n;
-    return n;
-  }
-  std::size_t read_physical(std::size_t id, std::span<double> out) {
-    auto n = read_at(id, tell(id), out);
+  template <SampleOutput R> std::size_t read(std::size_t id, R &&out) {
+    auto n = read_at(id, tell(id), std::forward<R>(out));
     cursors_[id] += n;
     return n;
   }

@@ -6,6 +6,7 @@
 #include <ratio>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -36,6 +37,14 @@ private:
 };
 
 namespace detail {
+inline std::string_view trim_spaces(std::string_view s) {
+  while (!s.empty() && s.front() == ' ')
+    s.remove_prefix(1);
+  while (!s.empty() && s.back() == ' ')
+    s.remove_suffix(1);
+  return s;
+}
+
 inline std::chrono::local_seconds local_now() {
   const auto now = std::time(nullptr);
   std::tm tm{};

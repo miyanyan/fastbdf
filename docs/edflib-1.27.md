@@ -12,7 +12,7 @@
 | `edfopen_file_writeonly` | 准备 `RecordingInfo` 及其通道，然后 `Writer::create(path, info)` | **互验**。上游写 EDF+/BDF+，fastbdf 还可写经典格式。 |
 | `edfopen_file_writeonly_with_params` | 对每个通道调用 `info.add_signal(label, samples_per_record)`，设置相同单位和对称物理范围后创建 Writer | **待验**。上游会生成从 `chan. 1` 起的标签；C++ 调用方显式给出标签。尚无两种创建方式的头部对照。 |
 | `edfclose_file` | Reader 随对象销毁关闭；Writer 显式 `finish()` | **互验**正常文件收尾；**差异**：单独销毁 Writer 不会代为调用 `finish()`。 |
-| `edfread_digital_samples`、`edfread_physical_samples` | `Reader::read_digital`、`read_physical`；绝对位置版本为 `read_digital_at`、`read_physical_at` | **互验**。逐通道比较原始数字值和标定后的物理值，覆盖 16/24 位；跨记录短读另有预期样本断言。见 `verify`、`verify_external`。 |
+| `edfread_digital_samples`、`edfread_physical_samples` | `Reader::read`、`Reader::read_at`，输出元素类型为 `std::int32_t` 或 `double` | **互验**。逐通道比较原始数字值和标定后的物理值，覆盖 16/24 位；跨记录短读另有预期样本断言。见 `verify`、`verify_external`。 |
 | `edfseek`、`edftell`、`edfrewind` | `reader.cursor(id)` 的 `seek/tell/rewind`；Reader 自带的每通道位置也可用 `seek/tell` 操作 | **原生**：相对定位、回绕、越界、独立游标。**差异**：上游把超出范围的位置夹到文件首尾，C++ 游标抛出异常。**待验**：对同一混合采样率文件交错执行定位和读取，逐步比较返回位置与样本。 |
 | `edflib_is_file_used`、`edflib_get_number_of_open_files`、`edflib_get_handle` | 由应用自行跟踪打开的文件 | **有意差异**。上游查询进程内 EDFlib 的全局表；fastbdf 不提供句柄注册或枚举接口。 |
 | `edflib_version` | 包版本见 CMake 项目版本；测试调用上游函数确认返回 127 | **差异**。fastbdf 没有返回 EDFlib 版本号的公共 C++ 函数。 |
@@ -39,9 +39,9 @@
 
 | EDFlib 入口 | fastbdf 用法 | 已有证据或差异 |
 |---|---|---|
-| `edfwrite_digital_samples`、`edf_blockwrite_digital_samples` | `Writer::write_digital_samples/write_digital_record` | **互验**。上游逐通道写与 fastbdf 整记录写生成的样本均经双库核对，覆盖 BDF 有符号端点。BDF+ 的 int32 block 入口也已用同输入核对，包括超出 24 位范围一档的饱和。 |
-| `edfwrite_physical_samples`、`edf_blockwrite_physical_samples` | `Writer::write_physical_samples/write_physical_record` | **互验**。上游逐通道写与 fastbdf 整记录写后比较数字码，已有饱和、截断样例。EDF+、BDF+ 的逐通道与 block 入口已分别对照，覆盖负增益量化边界。**有意差异**：在物理范围 19 → −7、数字范围 −100 → 200 时，输入 19，fastbdf 精确写入 −100，EDFlib 1.27 经浮点换算和截断写入 −99。两库均能读回对方实际写入的数字码。 |
-| `edfwrite_digital_short_samples`、`edf_blockwrite_digital_short_samples` | `Writer::write_short_samples/write_short_record` | **差异**。上游两个 short 入口只接受 EDF 系列；fastbdf 也可将 int16 输入写为 24 位 BDF。**原生**覆盖 BDF 整记录；**互验**共同支持的 EDF+ 逐通道和整记录路径，覆盖 int16 端点及窄标定范围的饱和。 |
+| `edfwrite_digital_samples`、`edf_blockwrite_digital_samples` | `Writer::write_samples/write_digital_record` | **互验**。上游逐通道写与 fastbdf 整记录写生成的样本均经双库核对，覆盖 BDF 有符号端点。BDF+ 的 int32 block 入口也已用同输入核对，包括超出 24 位范围一档的饱和。 |
+| `edfwrite_physical_samples`、`edf_blockwrite_physical_samples` | `Writer::write_samples/write_physical_record` | **互验**。上游逐通道写与 fastbdf 整记录写后比较数字码，已有饱和、截断样例。EDF+、BDF+ 的逐通道与 block 入口已分别对照，覆盖负增益量化边界。**有意差异**：在物理范围 19 → −7、数字范围 −100 → 200 时，输入 19，fastbdf 精确写入 −100，EDFlib 1.27 经浮点换算和截断写入 −99。两库均能读回对方实际写入的数字码。 |
+| `edfwrite_digital_short_samples`、`edf_blockwrite_digital_short_samples` | `Writer::write_samples/write_short_record` | **差异**。上游两个 short 入口只接受 EDF 系列；fastbdf 也可将 int16 输入写为 24 位 BDF。**原生**覆盖 BDF 整记录；**互验**共同支持的 EDF+ 逐通道和整记录路径，覆盖 int16 端点及窄标定范围的饱和。 |
 | `edf_blockwrite_digital_3byte_samples` | `Writer::write_packed_record`，传入一条记录普通通道的小端字节 | **互验**。EDFlib 能从 fastbdf 的 packed 文件读回有符号端点；同一小端缓冲区也已交给上游 3-byte 写入口，两套读取器逐点验证两份文件。 |
 | `edf_get_annotation` | `Reader::annotations()` 返回事件序列，元素包含 `onset/duration/text` | **互验**。包括空正文、零时长与缺失时长、亚秒起点、原始字节、超 512 字节正文后的下一条事件。见 `annotation_edges`、`verify_writer_formats`。 |
 | `edfwrite_annotation_utf8_hr`、`edfwrite_annotation_utf8` | `Writer::add_annotation`，以 `Tick` 表示时间，正文为 `std::string` | **互验**高精度入口的共同时值及正文处理：取前 40 字节、NUL 终止、低位控制字符替换为句点。上游两个入口分别采用 µs、100 µs；**待验**旧入口的单位换算和负起点的接受行为。 |

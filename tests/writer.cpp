@@ -49,12 +49,12 @@ int main() {
     options.annotation_position = position;
     auto w = Writer::create(path, info, options);
     std::int32_t digital[] = {-101, 0, 101};
-    w.write_digital_samples(digital);
+    w.write_samples(digital);
     throws([&] { w.finish(); });
     double bad[] = {0, std::numeric_limits<double>::quiet_NaN(), 1};
-    throws([&] { w.write_physical_samples(bad); });
+    throws([&] { w.write_samples(bad); });
     double physical[] = {-1e300, 0, 1e300};
-    w.write_physical_samples(physical);
+    w.write_samples(physical);
     w.add_annotation({Tick{1}, {}, "late \xc3\xa9"});
     w.flush();
     w.finish();
@@ -92,6 +92,11 @@ int main() {
   {
     auto reserved = info;
     reserved.signals[0].label = "EDF Annotations ";
+    throws([&] { auto w = Writer::create(path, reserved); });
+    reserved.signals[0].label = " EDF Annotations";
+    throws([&] { auto w = Writer::create(path, reserved); });
+    reserved.format = Format::bdf_plus;
+    reserved.signals[0].label = " BDF Annotations";
     throws([&] { auto w = Writer::create(path, reserved); });
     WriterOptions opts;
     opts.annotation_bytes_per_signal = 600;

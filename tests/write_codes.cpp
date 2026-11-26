@@ -38,7 +38,7 @@ void check_codes(const std::filesystem::path &path, const RecordingInfo &info,
         int n = static_cast<int>(info.signals[c].samples_per_record);
         std::vector<std::int32_t> fast(n);
         Codes ref(n);
-        require(reader.read_digital(c, fast) == fast.size() &&
+        require(reader.read(c, fast) == fast.size() &&
                     edfread_digital_samples(hdr->handle, static_cast<int>(c), n,
                                             ref.data()) == n,
                 "read count");
@@ -113,8 +113,8 @@ void short_edf(const std::filesystem::path &dir) {
       {{-32768, -32767, 0, 32766, 32767, -10, -10, 10, 10},
        {32767, 1, -1, 0, -32768, 9, -9, 10, -10}},
       [&](Writer &w, int h) {
-        w.write_short_samples(std::span(first).first(5));
-        w.write_short_samples(std::span(first).subspan(5));
+        w.write_samples(std::span(first).first(5));
+        w.write_samples(std::span(first).subspan(5));
         require(edfwrite_digital_short_samples(h, first.data()) == 0 &&
                     edfwrite_digital_short_samples(h, first.data() + 5) == 0,
                 "write short channels");
@@ -189,8 +189,8 @@ void negative_gain(const std::filesystem::path &dir, Format fmt) {
   compare_writers(
       dir, "negative", info, {expected, expected},
       [&](Writer &w, int h) {
-        w.write_physical_samples(std::span(samples).first(11));
-        w.write_physical_samples(std::span(samples).subspan(11));
+        w.write_samples(std::span(samples).first(11));
+        w.write_samples(std::span(samples).subspan(11));
         require(edfwrite_physical_samples(h, samples.data()) == 0 &&
                     edfwrite_physical_samples(h, samples.data() + 11) == 0,
                 "write physical channels");

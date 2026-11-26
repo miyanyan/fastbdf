@@ -37,10 +37,7 @@ public:
       throw nb::value_error("Output array must be aligned");
     auto buffer = std::span<T>(out.data(), out.size());
     nb::gil_scoped_release release;
-    if constexpr (std::is_same_v<T, double>)
-      return reader->read_physical_at(channel, start, buffer);
-    else
-      return reader->read_digital_at(channel, start, buffer);
+    return reader->read_at(channel, start, buffer);
   }
 
   void window_into(

@@ -6,6 +6,7 @@
 #include <fstream>
 #include <future>
 #include <iostream>
+#include <list>
 #include <stdexcept>
 #include <string>
 #include <tuple>
@@ -16,6 +17,34 @@ using namespace fastbdf;
 namespace fs = std::filesystem;
 std::int64_t ticks_in_one_second();
 namespace {
+template <class R>
+concept CanReadSamples = requires(Reader &reader, Reader::Cursor &cursor, R &&out) {
+  reader.read_at(0, 0, std::forward<R>(out));
+  reader.read(0, std::forward<R>(out));
+  cursor.read(std::forward<R>(out));
+};
+static_assert(CanReadSamples<std::int32_t (&)[2]> &&
+              CanReadSamples<std::vector<double> &> &&
+              CanReadSamples<std::span<double, 2>>);
+static_assert(!CanReadSamples<std::span<const double>> &&
+              !CanReadSamples<std::vector<double>> &&
+              !CanReadSamples<std::array<float, 2> &>);
+
+template <class R>
+concept CanWriteSamples = requires(Writer &w, const R &samples) {
+  w.write_samples(samples);
+  w.write_samples(0, samples);
+};
+
+static_assert(CanWriteSamples<std::int16_t[2]> &&
+              CanWriteSamples<std::array<std::int32_t, 2>> &&
+              CanWriteSamples<std::vector<float>> &&
+              CanWriteSamples<std::span<const double>>);
+static_assert(!CanWriteSamples<std::array<unsigned, 2>> &&
+              !CanWriteSamples<std::array<bool, 2>> &&
+              !CanWriteSamples<std::vector<std::int64_t>> &&
+              !CanWriteSamples<std::list<float>>);
+
 void check(bool condition, const char *message) {
   if (!condition)
     throw std::runtime_error(message);
@@ -89,10 +118,10 @@ void test_classic(const fs::path &p, bool bdf) {
             file.signals()[0].transducer == "AgCl",
         "classic metadata");
   std::array<std::int32_t, 12> x{};
-  check(file.read_digital_at(0, 0, x) == 9 && x[0] == -10 && x[5] == 10,
+  check(file.read_at(0, 0, x) == 9 && x[0] == -10 && x[5] == 10,
         "digital clipping and EOF");
   std::array<double, 3> phys{};
-  check(file.read_physical_at(0, 1, phys) == 3 &&
+  check(file.read_at(0, 1, phys) == 3 &&
             phys == std::array<double, 3>{10, 0, -1},
         "negative gain");
   auto ids = file.select_unique({"Temp", "EEG"});
@@ -104,20 +133,25 @@ void test_classic(const fs::path &p, bool bdf) {
         "empty window");
   auto one = file.cursor(0), two = file.cursor(0);
   one.seek(8);
-  check(one.read_digital(x) == 1 && one.tell() == 9 && two.tell() == 0,
+  check(one.read(x) == 1 && one.tell() == 9 && two.tell() == 0,
         "independent cursors");
-  check(one.read_digital(x) == 0, "cursor EOF");
+  check(one.read(x) == 0, "cursor EOF");
+  std::array<double, 1> physical_sample{};
+  check(two.read(physical_sample) == 1 && physical_sample[0] == 10 &&
+            two.tell() == 1 && file.tell(0) == 0, "independent physical cursor");
+  check(file.read(0, physical_sample) == 1 && physical_sample[0] == 10 &&
+            file.tell(0) == 1, "implicit physical cursor");
   expect_error([&] { file.select_unique("absent"); });
-  expect_error([&] { file.read_digital_at(2, 0, x); });
+  expect_error([&] { file.read_at(2, 0, x); });
   expect_error([&] { file.read_digital(ids, {2s, 1s}); });
   auto background = std::async(std::launch::async, [&] {
     std::array<std::int32_t, 6> out{};
     for (int i = 0; i < 256; i++)
-      check(file.read_digital_at(0, 1, out) == 6 && out[5] == -3,
+      check(file.read_at(0, 1, out) == 6 && out[5] == -3,
             "concurrent EEG read");
   });
   for (int i = 0; i < 256; i++)
-    check(file.read_digital_at(1, 2, x) == 1 && x[0] == 22,
+    check(file.read_at(1, 2, x) == 1 && x[0] == 22,
           "concurrent Temp read");
   background.get();
 }
@@ -133,6 +167,51 @@ void test_malformed(const fs::path &p) {
   }
   expect_error([&] { auto bad = Reader::open(p); });
 }
+void test_long_recording(const fs::path &path) {
+  RecordingInfo info;
+  info.format = Format::edf;
+  info.record_duration = 99999999s;
+  info.add_signal("x", 1);
+  const auto last_in_range = (Tick::max)().count() / info.record_duration.count();
+  auto writer = Writer::create(path, info);
+  for (std::int64_t r = 0; r <= last_in_range + 1; ++r)
+    writer.write_digital_record(std::array{static_cast<std::int32_t>(r)});
+  writer.finish();
+
+  auto reader = Reader::open(path);
+  auto start = reader.record_start(last_in_range);
+  check(start == info.record_duration * last_in_range, "last representable start");
+  expect_error([&] { reader.record_start(last_in_range + 1); });
+  check(reader.read_digital(std::array<std::size_t, 1>{0}, {start, (Tick::max)()}) ==
+            std::vector<std::vector<std::int32_t>>{{static_cast<std::int32_t>(last_in_range)}},
+        "window at Tick limit");
+  std::array<std::int32_t, 1> sample{};
+  check(reader.read_at(0, last_in_range + 1, sample) == 1 &&
+            sample[0] == last_in_range + 1, "sample beyond Tick limit");
+}
+void test_write_samples(const fs::path &path) {
+  RecordingInfo info;
+  for (const char *label : {"A", "B"}) {
+    auto &s = info.add_signal(label, 2);
+    s.digital_min = -100;
+    s.digital_max = 100;
+  }
+  auto w = Writer::create(path, info);
+  const std::int16_t first[] = {-20, 30};
+  expect_error([&] { w.write_samples(1, first); });
+  w.write_samples(first);
+  w.write_samples(1, std::array<std::int32_t, 2>{-200, 200});
+  const std::vector<float> physical{-0.5f, 0.5f};
+  w.write_samples(0, physical);
+  const double second[] = {0.5, -0.5};
+  w.write_samples(std::span{second});
+  w.finish();
+  auto reader = Reader::open(path);
+  check(reader.read_digital(reader.select_unique({"A", "B"}), {0s, 2s}) ==
+            std::vector<std::vector<std::int32_t>>{{-20, 30, -50, 50},
+                                                   {-100, 100, 50, -50}},
+        "typed channel writes");
+}
 } // namespace
 int main() {
   try {
@@ -141,6 +220,8 @@ int main() {
     test_classic(tmp.dir / "classic.edf", false);
     test_classic(tmp.dir / "classic.bdf", true);
     test_malformed(tmp.dir / "bad.edf");
+    test_long_recording(tmp.dir / "long.edf");
+    test_write_samples(tmp.dir / "typed.edf");
     RecordingInfo invalid_header;
     invalid_header.add_signal("Andr\xe9", 1);
     expect_error(
@@ -148,18 +229,26 @@ int main() {
     RecordingInfo info;
     info.format = Format::bdf_plus;
     auto &lead = info.add_signal("Fp1", 2);
+    lead.physical_min = -1e20;
+    lead.physical_max = 1;
     check(lead.digital_max == 8388607, "BDF signal defaults");
     auto path = tmp.dir / "endpoints.bdf";
     const std::array<std::int32_t, 2> endpoints{-8388608, 8388607};
     {
       auto writer = Writer::create(path, info);
       writer.write_digital_record(endpoints);
+      writer.add_annotation({Tick{}, {}, "a\x7f" "b"});
       writer.finish();
     }
     auto reader = Reader::open(path);
     std::array<std::int32_t, 2> data{};
-    check(reader.read_digital_at(0, 0, data) == data.size() && data == endpoints,
+    check(reader.read_at(0, 0, data) == data.size() && data == endpoints,
           "BDF digital endpoint round-trip");
+    std::array<double, 2> physical{};
+    check(reader.read_at(0, 0, physical) == physical.size() &&
+              physical == std::array<double, 2>{-1e20, 1},
+          "asymmetric physical endpoints");
+    check(reader.annotations().at(0).text == "a.b", "DEL annotation round-trip");
     return 0;
   } catch (const std::exception &e) {
     std::cerr << e.what() << '\n';

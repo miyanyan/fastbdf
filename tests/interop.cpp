@@ -149,14 +149,14 @@ static void verify(const std::filesystem::path &p, const RecordingInfo &h) {
       }
       std::vector<std::int32_t> a(expected.size());
       std::vector<int> b(expected.size());
-      check(reader.read_digital_at(id, 0, a) == a.size(), "fast read count");
+      check(reader.read_at(id, 0, a) == a.size(), "fast read count");
       check(edfread_digital_samples(f, id, int(b.size()), b.data()) ==
                 int(b.size()),
             "upstream read count");
       check(a == expected && std::equal(a.begin(), a.end(), b.begin()),
             "digital differential");
       std::vector<double> pa(a.size()), pb(a.size());
-      reader.read_physical_at(id, 0, pa);
+      reader.read_at(id, 0, pa);
       check(edfseek(f, id, 0, EDFSEEK_SET) == 0, "seek");
       check(edfread_physical_samples(f, id, int(pb.size()), pb.data()) ==
                 int(pb.size()),
@@ -164,7 +164,7 @@ static void verify(const std::filesystem::path &p, const RecordingInfo &h) {
       for (unsigned k = 0; k < pa.size(); ++k)
         check(std::abs(pa[k] - pb[k]) < 1e-10, "physical differential");
       std::array<std::int32_t, 5> slice{};
-      reader.read_digital_at(id, s.samples_per_record - 1, slice);
+      reader.read_at(id, s.samples_per_record - 1, slice);
       check(std::equal(slice.begin(), slice.end(),
                        expected.begin() + s.samples_per_record - 1),
             "cross-record partial read");
@@ -239,8 +239,8 @@ static void conversion_tests(const std::filesystem::path &dir, bool bdf) {
   Reader a(f), b(u);
   for (unsigned c = 0; c < 2; ++c) {
     std::vector<std::int32_t> x(h.signals[c].samples_per_record), y(x.size());
-    a.read_digital_at(c, 0, x);
-    b.read_digital_at(c, 0, y);
+    a.read_at(c, 0, x);
+    b.read_at(c, 0, y);
     check(x == y, "physical write clipping/truncation differential");
   }
   // Packed words preserve signed endpoints in their little-endian 16/24-bit
@@ -397,7 +397,7 @@ static void annotation_edges(const std::filesystem::path &dir, bool bdf) {
               for (std::size_t c = 0; c < reader.signals().size(); ++c) {
                 auto n = reader.signals()[c].samples_per_record;
                 std::vector<std::int32_t> samples(n);
-                check(reader.read_digital_at(c, r * n, samples) == n,
+                check(reader.read_at(c, r * n, samples) == n,
                       "chain source samples");
                 record.insert(record.end(), samples.begin(), samples.end());
               }
@@ -426,7 +426,7 @@ static void annotation_edges(const std::filesystem::path &dir, bool bdf) {
             for (std::size_t c = 0; c < reader.signals().size(); ++c) {
               std::vector<std::int32_t> source(reader.sample_count(c));
               std::vector<int> target(source.size());
-              reader.read_digital_at(c, 0, source);
+              reader.read_at(c, 0, source);
               check(
                   edfread_digital_samples(ref->handle, int(c),
                                           int(target.size()), target.data()) ==
@@ -541,7 +541,7 @@ static void verify_external(const std::filesystem::path &path) {
       for (std::uint64_t offset = 0; offset < n;) {
         auto count = static_cast<std::size_t>(
             std::min<std::uint64_t>(fast.size(), n - offset));
-        check(reader.read_digital_at(c, offset, std::span(fast).first(count)) ==
+        check(reader.read_at(c, offset, std::span(fast).first(count)) ==
                   count,
               "external digital count");
         check(edfread_digital_samples(handle, c, int(count), up.data()) ==
@@ -555,7 +555,7 @@ static void verify_external(const std::filesystem::path &path) {
       for (std::uint64_t offset = 0; offset < n;) {
         auto count = static_cast<std::size_t>(
             std::min<std::uint64_t>(pf.size(), n - offset));
-        check(reader.read_physical_at(c, offset, std::span(pf).first(count)) ==
+        check(reader.read_at(c, offset, std::span(pf).first(count)) ==
                   count,
               "external physical count");
         check(edfread_physical_samples(handle, c, int(count), pu.data()) ==

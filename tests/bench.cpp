@@ -153,7 +153,7 @@ int main(int argc, char **argv) {
     auto fast_scan = [&](unsigned n) {
       fastsum = 0;
       for (unsigned c = 0; c < n; ++c) {
-        check(reader.read_digital_at(c, 0, data) == data.size());
+        check(reader.read_at(c, 0, data) == data.size());
         fastsum += sum(data);
       }
     };
@@ -197,7 +197,7 @@ int main(int argc, char **argv) {
     f = median([&] {
       fastsum = 0;
       for (unsigned i = 0; i < windows; ++i) {
-        check(reader.read_digital_at(i % channels, offset(i), shortdata) ==
+        check(reader.read_at(i % channels, offset(i), shortdata) ==
               shortdata.size());
         fastsum += sum(shortdata);
       }
@@ -218,7 +218,7 @@ int main(int argc, char **argv) {
     std::array<std::int32_t, 64> other{};
     for (unsigned i = 0; i < windows; ++i) {
       auto begin = Clock::now();
-      check(reader.read_digital_at(i % channels, offset(i), shortdata) ==
+      check(reader.read_at(i % channels, offset(i), shortdata) ==
             shortdata.size());
       fast_latency.push_back(
           std::chrono::duration<double>(Clock::now() - begin).count());
@@ -247,7 +247,7 @@ int main(int argc, char **argv) {
       {
         fastbdf::Reader first(path);
         for (unsigned c = 0; c < channels; ++c)
-          check(first.read_digital_at(
+          check(first.read_at(
                     c, 0,
                     std::span(screen_fast)
                         .subspan(c * screen_samples, screen_samples)) ==

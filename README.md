@@ -36,10 +36,10 @@ auto first = file.sample_index_at_or_after(ids[0], 30s);
 std::array<std::int32_t, 4096> chunk;
 auto cursor = file.cursor(ids[0]);
 cursor.seek(-512, std::ios_base::end);  // 该通道至少有 512 个样本
-auto n = cursor.read_digital(chunk);    // 只使用 chunk 的前 n 个元素
+auto n = cursor.read(chunk);    // 只使用 chunk 的前 n 个元素
 ```
 
-`read_digital_at(id, first, span)` 和 `read_physical_at` 支持按绝对位置并发读取。每个 `Cursor` 独立维护位置，支持 `seek/tell/rewind`。游标借用 Reader，须在 Reader 移动、重新打开或销毁前结束使用。便捷的 `file.read_digital(id, span)` 使用文件对象自己的每通道游标，多线程共享这些隐式游标时由调用方同步。
+`file.read_at(id, first, out)` 支持按绝对位置并发读取。`out` 可以是可写数组、`std::vector` 或 `std::span`；`std::int32_t` 接收数字码，`double` 接收物理值。返回值是实际读取的样本数。每个 `Cursor` 独立维护位置，支持 `seek/tell/rewind`。游标借用 Reader，须在 Reader 移动、重新打开或销毁前结束使用。便捷的 `file.read(id, out)` 使用文件对象自己的每通道游标，多线程共享这些隐式游标时由调用方同步。
 
 ## 写入并补记事件
 
@@ -63,7 +63,9 @@ writer.add_annotation({250ms, std::nullopt, "stimulus"});
 writer.finish();
 ```
 
-`create` 会覆盖目标路径。起始时间默认取本地系统时间，导出历史数据时应设置 `info.start` 和 `info.subsecond`。先选择格式再调用 `add_signal`，它会按 16 或 24 位设置数字范围。每次整记录输入按文件通道顺序连续排列。逐通道输入使用 `write_digital_samples`、`write_short_samples` 或 `write_physical_samples`。设备已输出小端样本时，`write_packed_record` 可直接接收普通通道字节，注释通道由库插入。
+`create` 会覆盖目标路径。起始时间默认取本地系统时间，导出历史数据时应设置 `info.start` 和 `info.subsecond`。先选择格式再调用 `add_signal`，它会按 16 或 24 位设置数字范围。每次整记录输入按文件通道顺序连续排列。设备已输出小端样本时，`write_packed_record` 可直接接收普通通道字节，注释通道由库插入。
+
+逐通道写入使用 `write_samples(samples)`，也可以用 `write_samples(channel, samples)` 显式核对通道顺序。每次传入该通道一条记录的样本，支持 C 数组、`std::array`、`std::vector` 和 `std::span` 等连续范围。`std::int16_t` 和 `std::int32_t` 按数字码写入，`float` 和 `double` 按物理值标定，换算使用双精度。
 
 `flush()` 刷出已完成的记录。`finish()` 校验是否有未完成的通道、写回晚到事件和记录数，成功后可以重复调用。要确认文件写入成功，必须显式调用它。写入期间内存保存尚待写回的事件。通过 `WriterOptions` 预留每条记录的注释通道数、每通道字节数和位置，容量不足会报错。
 
@@ -79,6 +81,8 @@ writer.finish();
 | 注释读取 | 默认 `lazy` 在首次访问 `annotations()` 时加载。`none` 跳过事件，`all` 在打开时加载全部，`until_recording_ends` 复现 EDFlib 的停止标记规则。延迟加载时，连续记录的首次打开只需读取头部和第一条记录的计时信息；不连续记录要建立时间索引 |
 | 错误与文件生命周期 | 捕获 `fastbdf::Error` 并查看 `code()`。应用直接持有 `Reader` 和 `Writer`；读完后释放 Reader，写完后调用 `Writer::finish()` |
 
+连续记录的总时长可以超出 `Tick` 的表示范围。按样本下标仍可读取末尾波形；若请求的记录起点超出范围，`record_start(r)` 会抛出 `fastbdf::Error`。时间窗的两个端点及解析的 EDF+/BDF+ 时间戳仍须能用 `Tick` 表示。
+
 EDFlib 的 `*_hr` 注释写函数接收微秒，旧函数接收 100 微秒单位，迁移时使用相应的 `std::chrono::duration` 转换。EDFlib 用户从原生 C++ 接口迁移，本项目不导出其 C ABI。
 
 ### 与 EDFlib 1.27 交换文件
@@ -89,7 +93,7 @@ EDFlib 的 `*_hr` 注释写函数接收微秒，旧函数接收 100 微秒单位
 
 - 空描述事件保留起点、时长和顺序。每条记录开头专门用于计时的空描述不会计入事件数。
 - 事件时间的小数部分按 100 ns 向零截断。EDFlib 读取持续时间时仅转换前 15 个字符，fastbdf 读取遵循同一规则。写入会拒绝超过此长度的持续时间。
-- 事件正文按 EDFlib 1.27 的字节规则处理。写入最多取 40 字节，遇到 NUL 提前结束，其余小于 0x20 的字节替换为句点。读取最多返回 512 字节，允许 TAB、LF、CR，拒绝正文中其余 ASCII 控制字符及 DEL。两端均不校验或转换 UTF-8，按字节截断可能切开多字节字符。结构化患者和记录字段中的附加说明保留原有下划线及内部空格。
+- 事件正文按字节处理。写入最多取 40 字节，遇到 NUL 提前结束，其余小于 0x20 的字节及 DEL（0x7F）替换为句点。读取最多返回 512 字节，允许 TAB、LF、CR，拒绝正文中其余 ASCII 控制字符及 DEL。两端均不校验或转换 UTF-8，按字节截断可能切开多字节字符。结构化患者和记录字段中的附加说明保留原有下划线及内部空格。
 - 有波形通道的文件必须写完至少一条记录才能成功 `finish()`。可在补齐后重试。
 
 ## Python / NumPy 读取

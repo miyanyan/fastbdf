@@ -75,7 +75,7 @@ void inspect(const std::filesystem::path &path, bool bounded) {
     const auto &s = r.signals()[id];
     const auto count = r.sample_count(id);
     std::vector<double> full(bounded ? 0 : count);
-    if (!bounded && r.read_physical_at(id, 0, full) != full.size())
+    if (!bounded && r.read_at(id, 0, full) != full.size())
       throw std::runtime_error("short full read");
     std::cout << "{\"name\":" << json_string(s.label)
               << ",\"unit\":" << json_string(s.unit) << ",\"rate\":"
@@ -88,7 +88,7 @@ void inspect(const std::filesystem::path &path, bool bounded) {
     const std::uint64_t starts[] = {0, (count - width) / 2, count - width};
     for (int k = 0; k < 3; ++k) {
       std::vector<double> samples(static_cast<std::size_t>(width));
-      if (r.read_physical_at(id, starts[k], samples) != samples.size())
+      if (r.read_at(id, starts[k], samples) != samples.size())
         throw std::runtime_error("short window read");
       if (k)
         std::cout << ',';
