@@ -1,0 +1,5 @@
+# Match the LF output configured in .clang-format on every checkout.
+*.cpp text eol=lf
+*.hpp text eol=lf
+*.c text eol=lf
+*.h text eol=lf

@@ -2,7 +2,8 @@
 
 #include <cstddef>
 
-namespace fastbdf::detail::edflib_limits {
+namespace fastbdf::detail::edflib_limits
+{
 
 // EDFlib 1.27 counts description bytes, including for UTF-8 text.
 inline constexpr std::size_t written_description_bytes = 40;

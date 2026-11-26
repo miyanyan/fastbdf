@@ -11,110 +11,159 @@
 #include <utility>
 #include <vector>
 
-namespace fastbdf {
-template <class T>
-concept DigitalSample =
-    std::same_as<T, std::int16_t> || std::same_as<T, std::int32_t>;
+namespace fastbdf
+{
+template<class T>
+concept DigitalSample = std::same_as<T, std::int16_t> || std::same_as<T, std::int32_t>;
 
-template <class T>
+template<class T>
 concept PhysicalSample = std::same_as<T, float> || std::same_as<T, double>;
 
-enum class AnnotationMode { none, lazy, all, until_recording_ends };
-enum class AnnotationPosition { start, middle, end };
-
-struct WriterOptions {
-  std::size_t annotation_signals = 1;
-  std::size_t annotation_bytes_per_signal = 240;
-  AnnotationPosition annotation_position = AnnotationPosition::end;
+enum class AnnotationMode
+{
+    none,
+    lazy,
+    all,
+    until_recording_ends
+};
+enum class AnnotationPosition
+{
+    start,
+    middle,
+    end
 };
 
-enum class Format { edf, bdf, edf_plus, bdf_plus };
+struct WriterOptions
+{
+    std::size_t annotation_signals = 1;
+    std::size_t annotation_bytes_per_signal = 240;
+    AnnotationPosition annotation_position = AnnotationPosition::end;
+};
+
+enum class Format
+{
+    edf,
+    bdf,
+    edf_plus,
+    bdf_plus
+};
 // Exact elapsed time: whole_nanoseconds plus numerator / denominator of one
 // nanosecond.
-struct SampleTime {
-  std::chrono::nanoseconds whole_nanoseconds{};
-  std::uint32_t numerator{};
-  std::uint32_t denominator{1};
+struct SampleTime
+{
+    std::chrono::nanoseconds whole_nanoseconds{};
+    std::uint32_t numerator{};
+    std::uint32_t denominator{1};
 };
 
-struct TimeRange {
-  std::chrono::nanoseconds begin{}, end{};
+struct TimeRange
+{
+    std::chrono::nanoseconds begin{};
+    std::chrono::nanoseconds end{};
 };
 
-struct SignalSpec {
-  std::string label, unit, transducer, prefilter;
-  double physical_min = -1, physical_max = 1;
-  std::int32_t digital_min = -32768, digital_max = 32767;
-  std::uint32_t samples_per_record = 1;
+struct SignalSpec
+{
+    std::string label;
+    std::string unit;
+    std::string transducer;
+    std::string prefilter;
+    double physical_min = -1;
+    double physical_max = 1;
+    std::int32_t digital_min = -32768;
+    std::int32_t digital_max = 32767;
+    std::uint32_t samples_per_record = 1;
 };
 
-enum class Errc { invalid_argument, invalid_file, io, invalid_state };
+enum class Errc
+{
+    invalid_argument,
+    invalid_file,
+    io,
+    invalid_state
+};
 
-class Error : public std::runtime_error {
+class Error : public std::runtime_error
+{
 public:
-  explicit Error(std::string message, Errc code = Errc::invalid_argument)
-      : std::runtime_error(std::move(message)), code_(code) {}
-  Errc code() const noexcept { return code_; }
+    explicit Error(std::string message, Errc code = Errc::invalid_argument)
+        : std::runtime_error(std::move(message))
+        , code_(code)
+    {
+    }
+    Errc code() const noexcept { return code_; }
 
 private:
-  Errc code_;
+    Errc code_;
 };
 
-namespace detail {
-inline std::string_view trim_spaces(std::string_view s) {
-  while (!s.empty() && s.front() == ' ')
-    s.remove_prefix(1);
-  while (!s.empty() && s.back() == ' ')
-    s.remove_suffix(1);
-  return s;
+namespace detail
+{
+inline std::string_view trim_spaces(std::string_view s)
+{
+    while (!s.empty() && s.front() == ' ')
+        s.remove_prefix(1);
+    while (!s.empty() && s.back() == ' ')
+        s.remove_suffix(1);
+    return s;
 }
 
-inline std::chrono::local_seconds local_now() {
-  const auto now = std::time(nullptr);
-  std::tm tm{};
+inline std::chrono::local_seconds local_now()
+{
+    const auto now = std::time(nullptr);
+    std::tm tm{};
 #ifdef _WIN32
-  if (localtime_s(&tm, &now) != 0)
+    if (localtime_s(&tm, &now) != 0)
 #else
-  if (!localtime_r(&now, &tm))
+    if (!localtime_r(&now, &tm))
 #endif
-    throw Error("Cannot determine local recording time", Errc::io);
-  using namespace std::chrono;
-  return local_days{year{tm.tm_year + 1900} /
-                    month{static_cast<unsigned>(tm.tm_mon + 1)} /
-                    day{static_cast<unsigned>(tm.tm_mday)}} +
-         hours{tm.tm_hour} + minutes{tm.tm_min} + seconds{tm.tm_sec};
+        throw Error("Cannot determine local recording time", Errc::io);
+    using namespace std::chrono;
+    return local_days{year{tm.tm_year + 1900} / month{static_cast<unsigned>(tm.tm_mon + 1)} /
+                      day{static_cast<unsigned>(tm.tm_mday)}} +
+           hours{tm.tm_hour} + minutes{tm.tm_min} + seconds{tm.tm_sec};
 }
 } // namespace detail
 
-struct RecordingInfo {
-  Format format = Format::edf_plus;
-  std::chrono::local_seconds start = detail::local_now();
-  std::chrono::nanoseconds subsecond{},
-      record_duration = std::chrono::seconds{1};
-  std::string patient, recording;
-  std::string patient_code, patient_name, sex, birthdate, patient_additional;
-  std::string admin_code, technician, equipment, recording_additional;
-  std::vector<SignalSpec> signals;
+struct RecordingInfo
+{
+    Format format = Format::edf_plus;
+    std::chrono::local_seconds start = detail::local_now();
+    std::chrono::nanoseconds subsecond{};
+    std::chrono::nanoseconds record_duration = std::chrono::seconds{1};
+    std::string patient;
+    std::string recording;
+    std::string patient_code;
+    std::string patient_name;
+    std::string sex;
+    std::string birthdate;
+    std::string patient_additional;
+    std::string admin_code;
+    std::string technician;
+    std::string equipment;
+    std::string recording_additional;
+    std::vector<SignalSpec> signals;
 
   // Set format first. The full digital range follows the sample width.
-  SignalSpec &add_signal(std::string label, std::uint32_t samples_per_record) {
-    if (!samples_per_record)
-      throw Error("A signal needs at least one sample per record");
-    SignalSpec signal;
-    signal.label = std::move(label);
-    signal.samples_per_record = samples_per_record;
-    if (format == Format::bdf || format == Format::bdf_plus) {
-      signal.digital_min = -8388608;
-      signal.digital_max = 8388607;
+    SignalSpec& add_signal(std::string label, std::uint32_t samples_per_record)
+    {
+        if (!samples_per_record) throw Error("A signal needs at least one sample per record");
+        SignalSpec signal;
+        signal.label = std::move(label);
+        signal.samples_per_record = samples_per_record;
+        if (format == Format::bdf || format == Format::bdf_plus) {
+            signal.digital_min = -8388608;
+            signal.digital_max = 8388607;
+        }
+        return signals.emplace_back(std::move(signal));
     }
-    return signals.emplace_back(std::move(signal));
-  }
 };
 
-struct Annotation {
-  std::chrono::nanoseconds onset{};
-  std::optional<std::chrono::nanoseconds> duration;
-  std::string text;
+struct Annotation
+{
+    std::chrono::nanoseconds onset{};
+    std::optional<std::chrono::nanoseconds> duration;
+    std::string text;
 };
 
 } // namespace fastbdf
