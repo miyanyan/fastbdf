@@ -38,12 +38,7 @@ def main():
         parser.error("--records must be in [1, 4096]")
     executable = str(args.executable.resolve(strict=True))
     print(
-        "Python {} | MNE {} | NumPy {} | {}".format(
-            platform.python_version(),
-            mne.__version__,
-            np.__version__,
-            platform.platform(),
-        )
+        f"Python {platform.python_version()} | MNE {mne.__version__} | NumPy {np.__version__} | {platform.platform()}"
     )
     print("Open + full float64 read + SI volts + close; warm-up + median of 5")
     with tempfile.TemporaryDirectory(prefix="fastbdf-mne-") as directory:

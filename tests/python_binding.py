@@ -10,7 +10,6 @@ import fastbdf
 import mne
 import numpy as np
 
-
 NS_PER_SECOND = 1_000_000_000
 
 

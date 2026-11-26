@@ -132,6 +132,16 @@ Windows 和 Ubuntu CI 运行正确性测试。性能测试在本机单独运行�
 
 ## 开发与验证
 
+开发时安装一次提交钩子。提交时会按仓库的 `.clang-format` 格式化 C++，用 Ruff 检查并格式化 Python，同时检查配置文件、空白和合并冲突标记。
+
+```sh
+pipx install pre-commit
+pre-commit install
+pre-commit run --all-files
+```
+
+钩子自动修正文件后，检查差异并重新暂存再提交。CI 对整个仓库运行同一套检查。
+
 安装 Pixi、C++20 编译器和已 bootstrap 的 vcpkg，设置 `VCPKG_ROOT`。Windows 使用带 C++ 桌面开发组件的 Visual Studio，Linux 可用 GCC。Pixi 锁定开发工具，vcpkg manifest 的 `interop` feature 提供 EDFlib 1.27。
 
 ```sh

@@ -166,7 +166,9 @@ def memory_child(payload):
     count, rate = payload["count"], payload["rate"]
     if payload["engine"] == "fastbdf":
         with fastbdf.Reader(payload["path"]) as reader:
-            result = fast_read(reader, channels, 0, count * NANOSECONDS_PER_SECOND // int(rate), count)
+            result = fast_read(
+                reader, channels, 0, count * NANOSECONDS_PER_SECOND // int(rate), count
+            )
     else:
         with open_mne(payload["path"], [c[1] for c in channels]) as raw:
             result = raw.get_data(start=0, stop=count)
@@ -239,7 +241,11 @@ def benchmark(path, args, is_synthetic=False):
                 if engine == "fastbdf":
                     with fastbdf.Reader(str(path)) as reader:
                         result = fast_read(
-                            reader, channels, 0, stop * NANOSECONDS_PER_SECOND // int(rate), stop
+                            reader,
+                            channels,
+                            0,
+                            stop * NANOSECONDS_PER_SECOND // int(rate),
+                            stop,
                         )
                 else:
                     with open_mne(path, names) as raw:
