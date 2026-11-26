@@ -2,7 +2,6 @@
 #include <array>
 #include <chrono>
 #include <fastbdf/fastbdf.hpp>
-#include <fastbdf/file_set.hpp>
 #include <filesystem>
 #include <fstream>
 #include <future>
@@ -142,30 +141,25 @@ int main() {
     test_classic(tmp.dir / "classic.edf", false);
     test_classic(tmp.dir / "classic.bdf", true);
     test_malformed(tmp.dir / "bad.edf");
-    check(header_text_from_latin1("Andr\xe9") == "Andre",
-          "Latin-1 header encoding");
+    RecordingInfo invalid_header;
+    invalid_header.add_signal("Andr\xe9", 1);
+    expect_error(
+        [&] { Writer::create(tmp.dir / "non-ascii.edf", invalid_header); });
     RecordingInfo info;
     info.format = Format::bdf_plus;
     auto &lead = info.add_signal("Fp1", 2);
     check(lead.digital_max == 8388607, "BDF signal defaults");
-    auto path = tmp.dir / "handles.bdf";
-    FileSet files;
-    auto w = files.create(path, info);
-    check(files.size() == 1 && files.contains(path) &&
-              files.handles().front() == w,
-          "enumerate open files");
-    expect_error([&] { files.create(path, info); });
-    files.writer(w).write_digital_record(
-        std::array<std::int32_t, 2>{-8388608, 8388607});
-    files.close(w);
-    auto r = files.open(path);
-    expect_error([&] { files.writer(w); });
+    auto path = tmp.dir / "endpoints.bdf";
+    const std::array<std::int32_t, 2> endpoints{-8388608, 8388607};
+    {
+      auto writer = Writer::create(path, info);
+      writer.write_digital_record(endpoints);
+      writer.finish();
+    }
+    auto reader = Reader::open(path);
     std::array<std::int32_t, 2> data{};
-    check(files.reader(r).read_digital_at(0, 0, data) == 2 &&
-              data[1] == 8388607,
-          "FileSet reader");
-    files.close(r);
-    check(files.size() == 0 && !files.contains(path), "release handle");
+    check(reader.read_digital_at(0, 0, data) == data.size() && data == endpoints,
+          "BDF digital endpoint round-trip");
     return 0;
   } catch (const std::exception &e) {
     std::cerr << e.what() << '\n';

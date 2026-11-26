@@ -11,15 +11,15 @@
 | `edfopen_file_readonly` | `Reader::open(path, mode)`，通过 `header()`、`signals()`、`record_count()` 和 `sample_count(id)` 取头部与计数 | **互验**。连续 EDF+/BDF+ 两个写入方向、经典 EDF/BDF 的 fastbdf 写 → EDFlib 读、注释读取模式。见 `verify`、`verify_writer_formats`、`annotation_modes`。fastbdf 另提供延迟加载。 |
 | `edfopen_file_writeonly` | 准备 `RecordingInfo` 及其通道，然后 `Writer::create(path, info)` | **互验**。上游写 EDF+/BDF+，fastbdf 还可写经典格式。 |
 | `edfopen_file_writeonly_with_params` | 对每个通道调用 `info.add_signal(label, samples_per_record)`，设置相同单位和对称物理范围后创建 Writer | **待验**。上游会生成从 `chan. 1` 起的标签；C++ 调用方显式给出标签。尚无两种创建方式的头部对照。 |
-| `edfclose_file` | Reader 随对象销毁关闭；Writer 显式 `finish()`，或由 `FileSet::close()` 完成写入 | **互验**正常文件收尾；**差异**：单独销毁 Writer 不会代为调用 `finish()`。 |
+| `edfclose_file` | Reader 随对象销毁关闭；Writer 显式 `finish()` | **互验**正常文件收尾；**差异**：单独销毁 Writer 不会代为调用 `finish()`。 |
 | `edfread_digital_samples`、`edfread_physical_samples` | `Reader::read_digital`、`read_physical`；绝对位置版本为 `read_digital_at`、`read_physical_at` | **互验**。逐通道比较原始数字值和标定后的物理值，覆盖 16/24 位；跨记录短读另有预期样本断言。见 `verify`、`verify_external`。 |
 | `edfseek`、`edftell`、`edfrewind` | `reader.cursor(id)` 的 `seek/tell/rewind`；Reader 自带的每通道位置也可用 `seek/tell` 操作 | **原生**：相对定位、回绕、越界、独立游标。**差异**：上游把超出范围的位置夹到文件首尾，C++ 游标抛出异常。**待验**：对同一混合采样率文件交错执行定位和读取，逐步比较返回位置与样本。 |
-| `edflib_is_file_used`、`edflib_get_number_of_open_files`、`edflib_get_handle` | `FileSet::contains/size/handles` | **原生、差异**。每个 FileSet 只跟踪经它打开的对象。上游查询进程内 EDFlib 的全局表。 |
+| `edflib_is_file_used`、`edflib_get_number_of_open_files`、`edflib_get_handle` | 由应用自行跟踪打开的文件 | **有意差异**。上游查询进程内 EDFlib 的全局表；fastbdf 不提供句柄注册或枚举接口。 |
 | `edflib_version` | 包版本见 CMake 项目版本；测试调用上游函数确认返回 127 | **差异**。fastbdf 没有返回 EDFlib 版本号的公共 C++ 函数。 |
 
 ## 头部、标定与记录布局
 
-下列设置在创建 Writer 前填入。读回时查看 `Reader::header()` 和 `Reader::signals()`。上游部分文本 setter 会处理遗留编码；fastbdf 的头部字段使用可打印 ASCII，可显式调用 `header_text_from_latin1`。注释正文的规则见下一节。
+下列设置在创建 Writer 前填入。读回时查看 `Reader::header()` 和 `Reader::signals()`。上游部分文本 setter 会处理遗留编码；fastbdf 要求调用方在写入前将这些字段处理为可打印 ASCII。注释正文的规则见下一节。
 
 | EDFlib 入口 | fastbdf 字段或选项 | 已有证据或差异 |
 |---|---|---|
@@ -52,4 +52,4 @@
 1. **验证位置和时间。** 对混合采样率通道交错执行合法的起点、当前位置和末尾定位，覆盖跨记录、短读和 EOF；对越界分别断言两个库已知的行为。再用非整秒记录和亚秒起点核对普通与高精度注释入口。
 2. **补全头部字段。** 固定起始日期时间，填入非空的传感器、预滤波、管理员代码、技师和出生日期。两个写入方向都逐字段比较，并校验不同注释通道位置下的信号顺序。
 
-证据入口：写入数字码的四路读回见 [write_codes.cpp](../tests/write_codes.cpp)，其余双库对照见 [interop.cpp](../tests/interop.cpp)，原生断言见 [reader.cpp](../tests/reader.cpp)、[writer.cpp](../tests/writer.cpp) 和 [native.cpp](../tests/native.cpp)。实现入口为 [Reader](../include/fastbdf/reader.hpp)、[Writer](../include/fastbdf/writer.hpp)、[公共数据类型](../include/fastbdf/types.hpp) 和 [FileSet](../include/fastbdf/file_set.hpp)。
+证据入口：写入数字码的四路读回见 [write_codes.cpp](../tests/write_codes.cpp)，其余双库对照见 [interop.cpp](../tests/interop.cpp)，原生断言见 [reader.cpp](../tests/reader.cpp)、[writer.cpp](../tests/writer.cpp) 和 [native.cpp](../tests/native.cpp)。实现入口为 [Reader](../include/fastbdf/reader.hpp)、[Writer](../include/fastbdf/writer.hpp) 和 [公共数据类型](../include/fastbdf/types.hpp)。

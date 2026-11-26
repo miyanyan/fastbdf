@@ -1,6 +1,5 @@
 #pragma once
 #include "detail/file_source.hpp"
-#include "text.hpp"
 #include "types.hpp"
 #include <algorithm>
 #include <array>
@@ -329,8 +328,10 @@ class Reader {
         if (mode != AnnotationMode::none) {
           // EDFlib exposes and checks the first 512 description bytes.
           auto text = tal.substr(q + 1, std::min<std::size_t>(e - q - 1, 512));
-          if (!std::all_of(text.begin(), text.end(),
-                           detail::allowed_annotation_byte))
+          if (!std::all_of(text.begin(), text.end(), [](unsigned char c) {
+                return (c >= 32 && c != 127) || c == '\t' || c == '\n' ||
+                       c == '\r';
+              }))
             throw Error("Invalid annotation text");
           annotations_.push_back({onset, duration, std::string(text)});
           if (mode == AnnotationMode::until_recording_ends &&

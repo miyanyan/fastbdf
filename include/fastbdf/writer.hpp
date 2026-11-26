@@ -1,6 +1,5 @@
 #pragma once
 
-#include "text.hpp"
 #include "types.hpp"
 #include <algorithm>
 #include <array>
