@@ -1,5 +1,6 @@
 #include "edflib.h"
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <fastbdf/fastbdf.hpp>
 #include <filesystem>
@@ -10,6 +11,7 @@
 #include <stdexcept>
 #include <vector>
 using namespace fastbdf;
+using namespace std::chrono_literals;
 static void check(bool v, const char *message) {
   if (!v)
     throw std::runtime_error(message);
@@ -18,8 +20,8 @@ static void ok(int v) { check(v == 0, "upstream call failed"); }
 static RecordingInfo info(bool bdf) {
   RecordingInfo h;
   h.format = bdf ? Format::bdf_plus : Format::edf_plus;
-  h.record_duration = Tick{5000000};
-  h.subsecond = Tick{1234500};
+  h.record_duration = 500ms;
+  h.subsecond = 123'450us;
   h.patient_code = "P123";
   h.patient_name = "Test Person";
   h.sex = "F";
@@ -47,8 +49,8 @@ static std::vector<std::int32_t> values(const SignalSpec &s, unsigned r) {
 }
 static void create_fast(const std::filesystem::path &p, const RecordingInfo &h,
                         const std::vector<Annotation> &annotations = {
-                            {Tick{2500000}, Tick{1250000}, "event \xCE\xB1"},
-                            {Tick{9000000}, std::nullopt, "end"}}) {
+                            {250ms, 125ms, "event \xCE\xB1"},
+                            {900ms, std::nullopt, "end"}}) {
   auto w = Writer::create(p, h);
   for (const auto &a : annotations)
     w.add_annotation(a);
@@ -62,12 +64,11 @@ static void create_fast(const std::filesystem::path &p, const RecordingInfo &h,
   }
   w.finish();
 }
-static void
-create_upstream(const std::filesystem::path &p, const RecordingInfo &h,
-                bool bdf,
-                const std::vector<Annotation> &annotations = {
-                    {Tick{2500000}, Tick{1250000}, "event \xCE\xB1"},
-                    {Tick{9000000}, std::nullopt, "end"}}) {
+static void create_upstream(const std::filesystem::path &p,
+                            const RecordingInfo &h, bool bdf,
+                            const std::vector<Annotation> &annotations = {
+                                {250ms, 125ms, "event \xCE\xB1"},
+                                {900ms, std::nullopt, "end"}}) {
   int f = edfopen_file_writeonly(
       p.string().c_str(),
       bdf ? EDFLIB_FILETYPE_BDFPLUS : EDFLIB_FILETYPE_EDFPLUS, 2);
@@ -93,9 +94,9 @@ create_upstream(const std::filesystem::path &p, const RecordingInfo &h,
       ok(edf_set_digital_maximum(f, i, s.digital_max));
     }
     for (const auto &a : annotations)
-      ok(edfwrite_annotation_utf8_hr(f, a.onset.count() / 10,
-                                     a.duration ? a.duration->count() / 10 : -1,
-                                     a.text.c_str()));
+      ok(edfwrite_annotation_utf8_hr(
+          f, a.onset.count() / 1000,
+          a.duration ? a.duration->count() / 1000 : -1, a.text.c_str()));
     for (unsigned r = 0; r < 4; ++r)
       for (auto &s : h.signals) {
         auto v = values(s, r);
@@ -117,9 +118,10 @@ static void verify(const std::filesystem::path &p, const RecordingInfo &h) {
     check(hdr->edfsignals == 2 && reader.signals().size() == 2, "signal count");
     check(reader.record_count() == 4 && hdr->datarecords_in_file == 4,
           "record count");
-    check(reader.header().subsecond.count() == hdr->starttime_subsecond,
+    check(reader.header().subsecond.count() == hdr->starttime_subsecond * 100,
           "subsecond");
-    check(reader.header().record_duration.count() == hdr->datarecord_duration,
+    check(reader.header().record_duration.count() ==
+              hdr->datarecord_duration * 100,
           "record duration");
     check(reader.header().patient_code == h.patient_code &&
               reader.header().patient_name == h.patient_name &&
@@ -170,7 +172,7 @@ static void verify(const std::filesystem::path &p, const RecordingInfo &h) {
             "cross-record partial read");
     }
     std::array<std::size_t, 2> ids{1, 0};
-    auto window = reader.read_digital(ids, {Tick{1250000}, Tick{8750000}});
+    auto window = reader.read_digital(ids, {125ms, 875ms});
     for (unsigned i = 0; i < ids.size(); ++i) {
       auto &s = h.signals[ids[i]];
       std::vector<std::int32_t> expected;
@@ -193,10 +195,10 @@ static void verify(const std::filesystem::path &p, const RecordingInfo &h) {
       ok(edf_get_annotation(f, i, &a));
       auto &b = reader.annotations()[i];
       check(b.text == a.annotation, "annotation text");
-      check(b.onset.count() == a.onset, "annotation onset");
-      check(
-          (b.duration ? b.duration->count() == a.duration_l : a.duration_l < 0),
-          "annotation duration");
+      check(b.onset.count() == a.onset * 100, "annotation onset");
+      check((b.duration ? b.duration->count() == a.duration_l * 100
+                        : a.duration_l < 0),
+            "annotation duration");
     }
     ok(edfclose_file(f));
   } catch (...) {
@@ -206,8 +208,8 @@ static void verify(const std::filesystem::path &p, const RecordingInfo &h) {
 }
 static void conversion_tests(const std::filesystem::path &dir, bool bdf) {
   auto h = info(bdf);
-  h.subsecond = Tick{};
-  h.record_duration = Tick{10000000};
+  h.subsecond = 0ns;
+  h.record_duration = 1s;
   for (auto &s : h.signals) {
     s.digital_min = -100;
     s.digital_max = 200;
@@ -278,14 +280,14 @@ static void conversion_tests(const std::filesystem::path &dir, bool bdf) {
 static void annotation_modes(const std::filesystem::path &dir, bool bdf,
                              std::size_t tracks) {
   auto h = info(bdf);
-  h.subsecond = Tick{};
+  h.subsecond = 0ns;
   auto path = dir / (bdf ? "modes.bdf" : "modes.edf");
   {
     auto w =
         Writer::create(path, h, WriterOptions{.annotation_signals = tracks});
-    w.add_annotation({Tick{0}, std::nullopt, "before"});
-    w.add_annotation({Tick{1000000}, Tick{0}, "Recording ends"});
-    w.add_annotation({Tick{9000000}, Tick{2500000}, "after"});
+    w.add_annotation({0ns, std::nullopt, "before"});
+    w.add_annotation({100ms, 0ns, "Recording ends"});
+    w.add_annotation({900ms, 250ms, "after"});
     std::vector<std::int32_t> record(10);
     for (unsigned i = 0; i < 4; ++i)
       w.write_digital_record(record);
@@ -314,9 +316,10 @@ static void annotation_modes(const std::filesystem::path &dir, bool bdf,
       edflib_annotation_t a{};
       ok(edf_get_annotation(hdr->handle, i, &a));
       auto &b = annotations[i];
-      check(b.text == a.annotation && b.onset.count() == a.onset,
+      check(b.text == a.annotation && b.onset.count() == a.onset * 100,
             "annotation mode content");
-      check(b.duration ? b.duration->count() == a.duration_l : a.duration_l < 0,
+      check(b.duration ? b.duration->count() == a.duration_l * 100
+                       : a.duration_l < 0,
             "annotation mode duration");
     }
     if (count) {
@@ -326,7 +329,7 @@ static void annotation_modes(const std::filesystem::path &dir, bool bdf,
               "explicit zero duration");
       if (count > 2)
         check(annotations[2].duration &&
-                  annotations[2].duration->count() == 2500000,
+                  annotations[2].duration->count() == 250000000,
               "positive duration");
     }
     ok(edfclose_file(hdr->handle));
@@ -343,10 +346,10 @@ static void annotation_edges(const std::filesystem::path &dir, bool bdf) {
   h.recording_additional = "X  recording_under_score   X";
   for (const auto &annotations : std::vector<std::vector<Annotation>>{
            {},
-           {{Tick{0}, std::nullopt, ""}},
-           {{Tick{2500000}, Tick{1250000}, "first\tline\nnext\rlast"},
-            {Tick{9000000}, std::nullopt, std::string(39, 'a') + "\xc3\xa9"},
-            {Tick{12000000}, Tick{0}, std::string("hi\0end", 6)}}}) {
+           {{0ns, std::nullopt, ""}},
+           {{250ms, 125ms, "first\tline\nnext\rlast"},
+            {900ms, std::nullopt, std::string(39, 'a') + "\xc3\xa9"},
+            {1'200ms, 0ns, std::string("hi\0end", 6)}}}) {
     for (bool upstream : {false, true}) {
       auto path = dir / (std::string(upstream ? "edges-up" : "edges-fast") +
                          (bdf ? ".bdf" : ".edf"));
@@ -380,9 +383,9 @@ static void annotation_edges(const std::filesystem::path &dir, bool bdf) {
           const auto &got = reader.annotations()[i];
           check(got.text == expected[i].text && got.text == a.annotation &&
                     got.onset == expected[i].onset &&
-                    got.onset.count() == a.onset &&
+                    got.onset.count() == a.onset * 100 &&
                     got.duration == expected[i].duration &&
-                    (got.duration ? got.duration->count() == a.duration_l
+                    (got.duration ? got.duration->count() == a.duration_l * 100
                                   : a.duration_l < 0),
                 "genuine writer annotation edge content");
         }
@@ -441,9 +444,9 @@ static void annotation_edges(const std::filesystem::path &dir, bool bdf) {
               ok(edf_get_annotation(ref->handle, int(i), &a));
               const auto &original = reader.annotations()[i];
               check(original.text == a.annotation &&
-                        original.onset.count() == a.onset &&
+                        original.onset.count() == a.onset * 100 &&
                         (original.duration
-                             ? original.duration->count() == a.duration_l
+                             ? original.duration->count() == a.duration_l * 100
                              : a.duration_l < 0),
                     "chain preserves extracted annotations");
             }
@@ -461,7 +464,9 @@ static void annotation_edges(const std::filesystem::path &dir, bool bdf) {
     }
   }
   // Keep a genuine upstream header/data layout and replace only the first TAL
-  // payload. EDFlib accepts further fraction digits and truncates to ticks.
+  // payload. EDFlib truncates fractional times to 100 ns and limits duration
+  // text to 15 characters; fastbdf retains nanosecond precision without that
+  // limit.
   auto fractional = dir / (bdf ? "fractional.bdf" : "fractional.edf");
   create_upstream(fractional, h, bdf, {});
   {
@@ -501,15 +506,14 @@ static void annotation_edges(const std::filesystem::path &dir, bool bdf) {
           "long fractional TAL count");
     const auto &got = reader.annotations()[0];
     check(got.text == "fraction" && got.text == a.annotation &&
-              got.onset.count() == 2500000 && got.onset.count() == a.onset &&
-              got.duration && got.duration->count() == 1250000 &&
-              got.duration->count() == a.duration_l,
-          "long fractional TAL truncation differential");
-    check(reader.annotations()[1].duration &&
-              reader.annotations()[1].duration->count() == 1234567891234500LL &&
-              reader.annotations()[1].duration->count() ==
-                  long_duration.duration_l,
-          "long TAL duration matches upstream read buffer precision");
+              got.onset == 250'000'099ns && got.duration == 125'000'099ns,
+          "fractional TAL preserves nanosecond precision");
+    check(a.onset == 2500000 && a.duration_l == 1250000,
+          "upstream fractional TAL truncates to 100 ns");
+    check(reader.annotations()[1].duration == 123'456'789'123'456'700ns,
+          "long TAL duration preserves all fractional digits");
+    check(long_duration.duration_l == 1234567891234500LL,
+          "upstream long TAL duration uses 15-character buffer");
   }
 }
 
@@ -525,9 +529,10 @@ static void verify_external(const std::filesystem::path &path) {
     check(reader.record_count() ==
               static_cast<std::uint64_t>(hdr->datarecords_in_file),
           "external record count");
-    check(reader.header().record_duration.count() == hdr->datarecord_duration,
+    check(reader.header().record_duration.count() ==
+              hdr->datarecord_duration * 100,
           "external duration");
-    check(reader.header().subsecond.count() == hdr->starttime_subsecond,
+    check(reader.header().subsecond.count() == hdr->starttime_subsecond * 100,
           "external subsecond");
     std::uint64_t total = 0;
     std::vector<std::int32_t> fast(65536);
@@ -541,8 +546,7 @@ static void verify_external(const std::filesystem::path &path) {
       for (std::uint64_t offset = 0; offset < n;) {
         auto count = static_cast<std::size_t>(
             std::min<std::uint64_t>(fast.size(), n - offset));
-        check(reader.read_at(c, offset, std::span(fast).first(count)) ==
-                  count,
+        check(reader.read_at(c, offset, std::span(fast).first(count)) == count,
               "external digital count");
         check(edfread_digital_samples(handle, c, int(count), up.data()) ==
                   int(count),
@@ -555,8 +559,7 @@ static void verify_external(const std::filesystem::path &path) {
       for (std::uint64_t offset = 0; offset < n;) {
         auto count = static_cast<std::size_t>(
             std::min<std::uint64_t>(pf.size(), n - offset));
-        check(reader.read_at(c, offset, std::span(pf).first(count)) ==
-                  count,
+        check(reader.read_at(c, offset, std::span(pf).first(count)) == count,
               "external physical count");
         check(edfread_physical_samples(handle, c, int(count), pu.data()) ==
                   int(count),
@@ -578,15 +581,16 @@ static void verify_external(const std::filesystem::path &path) {
       edflib_annotation_t a{};
       ok(edf_get_annotation(handle, int(i), &a));
       auto &b = annotations[i];
-      check(b.text == a.annotation && b.onset.count() == a.onset,
+      check(b.text == a.annotation && b.onset.count() == a.onset * 100,
             "external annotation mismatch");
-      check(b.duration ? b.duration->count() == a.duration_l : a.duration_l < 0,
+      check(b.duration ? b.duration->count() == a.duration_l * 100
+                       : a.duration_l < 0,
             "external annotation duration");
     }
     std::cout << "External differential passed: bytes="
               << std::filesystem::file_size(path)
               << ", records=" << reader.record_count()
-              << ", record_duration_ticks="
+              << ", record_duration_ns="
               << reader.header().record_duration.count()
               << ", total_samples=" << total
               << ", annotations=" << annotations.size() << "\n";
@@ -600,20 +604,20 @@ static void verify_external(const std::filesystem::path &path) {
 static void verify_writer_formats(const std::filesystem::path &dir, bool bdf) {
   auto h = info(bdf);
   h.format = bdf ? Format::bdf : Format::edf;
-  h.subsecond = Tick{};
+  h.subsecond = 0ns;
   auto classic = dir / (bdf ? "classic.bdf" : "classic.edf");
   create_fast(classic, h, {});
   verify_external(classic);
 
   h = info(bdf);
   h.signals.clear();
-  h.record_duration = Tick{};
+  h.record_duration = 0ns;
   auto events = dir / (bdf ? "events.bdf" : "events.edf");
   WriterOptions options;
   options.annotation_bytes_per_signal = 600;
   auto w = Writer::create(events, h, options);
-  w.add_annotation({Tick{}, std::nullopt, ""});
-  w.add_annotation({Tick{1}, Tick{}, std::string(512, 'a')});
+  w.add_annotation({0ns, std::nullopt, ""});
+  w.add_annotation({100ns, 0ns, std::string(512, 'a')});
   w.finish();
   verify_external(events);
   // A third-party file can have descriptions larger than either writer emits.

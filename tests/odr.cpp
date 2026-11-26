@@ -1,5 +1,5 @@
 #include <fastbdf/fastbdf.hpp>
 
-std::int64_t ticks_in_one_second() {
-  return fastbdf::Tick(std::chrono::seconds(1)).count();
+std::int64_t nanoseconds_in_one_second() {
+  return fastbdf::RecordingInfo{}.record_duration.count();
 }

@@ -15,7 +15,7 @@
 using namespace std::chrono_literals;
 using namespace fastbdf;
 namespace fs = std::filesystem;
-std::int64_t ticks_in_one_second();
+std::int64_t nanoseconds_in_one_second();
 namespace {
 template <class R>
 concept CanReadSamples = requires(Reader &reader, Reader::Cursor &cursor, R &&out) {
@@ -124,6 +124,13 @@ void test_classic(const fs::path &p, bool bdf) {
   check(file.read_at(0, 1, phys) == 3 &&
             phys == std::array<double, 3>{10, 0, -1},
         "negative gain");
+  const auto t = file.sample_time(0, 4); // 0.5 s + 1/6 s
+  check(t.whole_nanoseconds == 666'666'666ns && t.numerator * 3 == 2 * t.denominator,
+        "exact fractional nanosecond for a sample in the second record");
+  check(file.sample_index_at_or_after(0, t.whole_nanoseconds) == 4 &&
+            file.sample_index_at_or_after(0, t.whole_nanoseconds + 1ns) == 5,
+        "lookup on either side of a fractional sample time");
+  expect_error([&] { file.sample_time(0, file.sample_count(0)); });
   auto ids = file.select_unique({"Temp", "EEG"});
   auto data = file.read_digital(ids, {250ms, 1s});
   check(data == std::vector<std::vector<std::int32_t>>{{21}, {0, 1, 9, 10}},
@@ -172,7 +179,7 @@ void test_long_recording(const fs::path &path) {
   info.format = Format::edf;
   info.record_duration = 99999999s;
   info.add_signal("x", 1);
-  const auto last_in_range = (Tick::max)().count() / info.record_duration.count();
+  const auto last_in_range = (std::chrono::nanoseconds::max)().count() / info.record_duration.count();
   auto writer = Writer::create(path, info);
   for (std::int64_t r = 0; r <= last_in_range + 1; ++r)
     writer.write_digital_record(std::array{static_cast<std::int32_t>(r)});
@@ -182,12 +189,50 @@ void test_long_recording(const fs::path &path) {
   auto start = reader.record_start(last_in_range);
   check(start == info.record_duration * last_in_range, "last representable start");
   expect_error([&] { reader.record_start(last_in_range + 1); });
-  check(reader.read_digital(std::array<std::size_t, 1>{0}, {start, (Tick::max)()}) ==
+  check(reader.read_digital(std::array<std::size_t, 1>{0}, {start, (std::chrono::nanoseconds::max)()}) ==
             std::vector<std::vector<std::int32_t>>{{static_cast<std::int32_t>(last_in_range)}},
-        "window at Tick limit");
+        "window at nanosecond limit");
   std::array<std::int32_t, 1> sample{};
   check(reader.read_at(0, last_in_range + 1, sample) == 1 &&
-            sample[0] == last_in_range + 1, "sample beyond Tick limit");
+            sample[0] == last_in_range + 1, "sample beyond nanosecond limit");
+}
+void test_annotation_nanoseconds(const fs::path &path) {
+  using std::chrono::nanoseconds;
+  const auto maximum = (nanoseconds::max)();
+  const auto minimum = (nanoseconds::min)();
+  auto writer = Writer::create(path, RecordingInfo{});
+  writer.add_annotation({minimum, maximum, "limits"});
+  writer.add_annotation({-1ns, 1ns, "one nanosecond"});
+  writer.finish();
+
+  auto reader = Reader::open(path);
+  const auto &events = reader.annotations();
+  check(events.size() == 2 && events[0].onset == minimum &&
+            events[0].duration == maximum && events[1].onset == -1ns &&
+            events[1].duration == 1ns, "signed nanosecond annotation round-trip");
+}
+void test_sample_offset_overflow(const fs::path &path) {
+  RecordingInfo info;
+  info.format = Format::edf;
+  info.record_duration = 90'000'000s;
+  constexpr unsigned samples = 25'005;
+  info.add_signal("x", samples);
+  auto writer = Writer::create(path, info);
+  writer.write_short_record(std::vector<std::int16_t>(samples));
+  writer.finish();
+
+  auto reader = Reader::open(path);
+  // At 14/15 of this record, elapsed nanoseconds times samples exceeds UINT64_MAX.
+  const std::chrono::nanoseconds boundary = 84'000'000s;
+  constexpr auto index = samples / 15 * 14;
+  const auto t = reader.sample_time(0, index);
+  check(t.whole_nanoseconds == boundary && t.numerator == 0,
+        "sample time when index times duration overflows");
+  check(reader.sample_index_at_or_after(0, boundary - 1ns) == index &&
+            reader.sample_index_at_or_after(0, boundary) == index &&
+            reader.sample_index_at_or_after(0, boundary + 1ns) == index + 1 &&
+            reader.sample_index_at_or_after(0, info.record_duration - 1ns) == samples,
+        "exact sample boundaries when the intermediate product overflows");
 }
 void test_write_samples(const fs::path &path) {
   RecordingInfo info;
@@ -215,12 +260,14 @@ void test_write_samples(const fs::path &path) {
 } // namespace
 int main() {
   try {
-    check(ticks_in_one_second() == 10000000, "header-only cross-TU linkage");
+    check(nanoseconds_in_one_second() == 1'000'000'000, "header-only cross-TU linkage");
     Temp tmp;
     test_classic(tmp.dir / "classic.edf", false);
     test_classic(tmp.dir / "classic.bdf", true);
     test_malformed(tmp.dir / "bad.edf");
     test_long_recording(tmp.dir / "long.edf");
+    test_annotation_nanoseconds(tmp.dir / "annotation-ns.edf");
+    test_sample_offset_overflow(tmp.dir / "sample-offset.edf");
     test_write_samples(tmp.dir / "typed.edf");
     RecordingInfo invalid_header;
     invalid_header.add_signal("Andr\xe9", 1);
@@ -237,7 +284,7 @@ int main() {
     {
       auto writer = Writer::create(path, info);
       writer.write_digital_record(endpoints);
-      writer.add_annotation({Tick{}, {}, "a\x7f" "b"});
+      writer.add_annotation({std::chrono::nanoseconds{}, {}, "a\x7f" "b"});
       writer.finish();
     }
     auto reader = Reader::open(path);

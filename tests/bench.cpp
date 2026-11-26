@@ -179,8 +179,7 @@ int main(int argc, char **argv) {
     report("single channel", f, u, payload / channels);
     std::array<std::size_t, channels> ids{};
     std::iota(ids.begin(), ids.end(), 0);
-    fastbdf::TimeRange range{fastbdf::Tick{},
-                             fastbdf::Tick{std::int64_t(records) * 10000000}};
+    fastbdf::TimeRange range{{}, std::chrono::seconds{records}};
     f = median([&] {
       auto all = reader.read_digital(ids, range);
       fastsum = 0;

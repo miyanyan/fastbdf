@@ -4,6 +4,7 @@
 #include <iostream>
 #include <vector>
 using namespace fastbdf;
+using namespace std::chrono_literals;
 namespace {
 void generate(const std::filesystem::path &dir) {
   std::filesystem::create_directories(dir);
@@ -14,7 +15,7 @@ void generate(const std::filesystem::path &dir) {
     RecordingInfo h;
     h.format = formats[f];
     h.start = std::chrono::local_days{std::chrono::year{2000} / 1 / 1};
-    h.record_duration = Tick{5000000};
+    h.record_duration = 500ms;
     for (auto n : {16u, 7u}) {
       auto &s = h.add_signal("channel" + std::to_string(h.signals.size()), n);
       s.unit = h.signals.size() == 1 ? "uV" : "V";
@@ -24,8 +25,8 @@ void generate(const std::filesystem::path &dir) {
     auto w = Writer::create(
         dir / (std::string(names[f]) + (f % 2 ? ".bdf" : ".edf")), h);
     if (f >= 2) {
-      w.add_annotation({Tick{2500000}, Tick{1250000}, "event \xce\xb1"});
-      w.add_annotation({Tick{12500000}, {}, "end"});
+      w.add_annotation({250ms, 125ms, "event \xce\xb1"});
+      w.add_annotation({1'250ms, {}, "end"});
     }
     for (int r = 0; r < 4; ++r) {
       std::vector<std::int32_t> values;
@@ -68,7 +69,7 @@ void inspect(const std::filesystem::path &path, bool bounded) {
   Reader r(path);
   std::cout << std::setprecision(17) << "{\"records\":" << r.record_count()
             << ",\"record_duration\":"
-            << r.header().record_duration.count() / 1e7 << ",\"channels\":[";
+            << r.header().record_duration.count() / 1e9 << ",\"channels\":[";
   for (std::size_t id = 0; id < r.signals().size(); ++id) {
     if (id)
       std::cout << ',';
@@ -79,7 +80,7 @@ void inspect(const std::filesystem::path &path, bool bounded) {
       throw std::runtime_error("short full read");
     std::cout << "{\"name\":" << json_string(s.label)
               << ",\"unit\":" << json_string(s.unit) << ",\"rate\":"
-              << s.samples_per_record * 1e7 / r.header().record_duration.count()
+              << s.samples_per_record * 1e9 / r.header().record_duration.count()
               << ",\"count\":" << count << ",\"values\":";
     array(full);
     std::cout << ",\"windows\":[";
@@ -104,8 +105,8 @@ void inspect(const std::filesystem::path &path, bool bounded) {
     if (comma)
       std::cout << ',';
     comma = true;
-    std::cout << "{\"onset\":" << a.onset.count() / 1e7 << ",\"duration\":"
-              << (a.duration ? a.duration->count() / 1e7 : 0)
+    std::cout << "{\"onset\":" << a.onset.count() / 1e9 << ",\"duration\":"
+              << (a.duration ? a.duration->count() / 1e9 : 0)
               << ",\"text\":" << json_string(a.text) << '}';
   }
   std::cout << "]}\n";

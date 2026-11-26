@@ -32,7 +32,7 @@
 | `edf_set_sex`、`edf_set_gender`、`edf_set_birthdate` | `RecordingInfo::sex/birthdate`，出生日期采用 `YYYY-MM-DD` | **原生**有出生日期样例；`gender` 是上游废弃别名。**待验**不同性别值、缺失值和出生日期的双向字段断言。 |
 | `edf_set_admincode`、`edf_set_technician` | `RecordingInfo::admin_code/technician` | **待验**。支持序列化和解析，尚缺两个库对非空字段的逐项断言。 |
 | `edf_set_patient_additional`、`edf_set_recording_additional` | `RecordingInfo::patient_additional/recording_additional` | **互验**。覆盖内部空格、下划线、字母 X 和读出后重写。见 `annotation_edges`。 |
-| `edf_set_datarecord_duration`、`edf_set_micro_datarecord_duration` | `RecordingInfo::record_duration` 使用 100 ns 的 `Tick` | **互验**常规记录时长。两个上游 setter 的参数单位分别为 10 µs、1 µs。**待验**微秒级极值、允许范围与 8 字节头部字段的可表示性。 |
+| `edf_set_datarecord_duration`、`edf_set_micro_datarecord_duration` | `RecordingInfo::record_duration` 使用 `std::chrono::nanoseconds` | **互验**常规记录时长。两个上游 setter 的参数单位分别为 10 µs、1 µs。**待验**微秒级极值、允许范围与 8 字节头部字段的可表示性。 |
 | `edf_set_number_of_annotation_signals`、`edf_set_annot_chan_idx_pos` | `WriterOptions::annotation_signals/annotation_position` | **互验**单、双注释通道的读取模式；**原生**有首、中、末位置布局断言。**待验**上游设置位置后，两端读取相同的逻辑通道顺序。 |
 
 ## 写样本与事件
@@ -44,7 +44,7 @@
 | `edfwrite_digital_short_samples`、`edf_blockwrite_digital_short_samples` | `Writer::write_samples/write_short_record` | **差异**。上游两个 short 入口只接受 EDF 系列；fastbdf 也可将 int16 输入写为 24 位 BDF。**原生**覆盖 BDF 整记录；**互验**共同支持的 EDF+ 逐通道和整记录路径，覆盖 int16 端点及窄标定范围的饱和。 |
 | `edf_blockwrite_digital_3byte_samples` | `Writer::write_packed_record`，传入一条记录普通通道的小端字节 | **互验**。EDFlib 能从 fastbdf 的 packed 文件读回有符号端点；同一小端缓冲区也已交给上游 3-byte 写入口，两套读取器逐点验证两份文件。 |
 | `edf_get_annotation` | `Reader::annotations()` 返回事件序列，元素包含 `onset/duration/text` | **互验**。包括空正文、零时长与缺失时长、亚秒起点、原始字节、超 512 字节正文后的下一条事件。见 `annotation_edges`、`verify_writer_formats`。 |
-| `edfwrite_annotation_utf8_hr`、`edfwrite_annotation_utf8` | `Writer::add_annotation`，以 `Tick` 表示时间，正文为 `std::string` | **互验**高精度入口的共同时值及正文处理：取前 40 字节、NUL 终止、低位控制字符替换为句点。上游两个入口分别采用 µs、100 µs；**待验**旧入口的单位换算和负起点的接受行为。 |
+| `edfwrite_annotation_utf8_hr`、`edfwrite_annotation_utf8` | `Writer::add_annotation`，以 `std::chrono::nanoseconds` 表示时间，正文为 `std::string` | **互验**高精度入口的共同时值及正文处理：取前 40 字节、NUL 终止、低位控制字符替换为句点。上游两个入口分别采用 µs、100 µs；**待验**旧入口的单位换算和负起点的接受行为。 |
 | `edfwrite_annotation_latin1_hr`、`edfwrite_annotation_latin1` | 调用方先将 Latin-1 转为目标字节，再调用 `add_annotation` | **有意差异**。库内没有自动转换注释的入口。若要复现上游对超长 Latin-1 输入的结果，还要考虑上游转换缓冲区与截断顺序。 |
 
 ## 下一批互操作用例

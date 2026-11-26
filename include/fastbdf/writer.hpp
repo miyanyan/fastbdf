@@ -73,10 +73,6 @@ public:
       fail("annotations require EDF+ or BDF+");
     if (annotation.duration && annotation.duration->count() < 0)
       fail("negative annotation duration");
-    if (annotation.duration &&
-        detail::seconds(annotation.duration->count(), false).size() >
-            detail::edflib_limits::duration_text_chars)
-      fail("annotation duration exceeds the EDFlib precision limit");
     // Match EDFlib 1.27's byte-oriented description buffer.
     auto &text = annotation.text;
     text.resize(std::min(text.size(),

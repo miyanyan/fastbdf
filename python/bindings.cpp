@@ -41,8 +41,7 @@ public:
   }
 
   void window_into(
-      const std::vector<size_t> &channels, int64_t start_tick,
-      int64_t stop_tick,
+      const std::vector<size_t> &channels, int64_t start_ns, int64_t stop_ns,
       nb::ndarray<nb::numpy, double, nb::ndim<2>, nb::c_contig, nb::device::cpu>
           out) const {
     auto reader = get();
@@ -57,17 +56,21 @@ public:
                                      : out.data(),
                         out.shape(1));
     nb::gil_scoped_release release;
-    reader->read_physical_into(channels, {Tick{start_tick}, Tick{stop_tick}},
-                               rows);
+    reader->read_physical_into(
+        channels,
+        {std::chrono::nanoseconds{start_ns}, std::chrono::nanoseconds{stop_ns}},
+        rows);
   }
 
-  nb::list window(const std::vector<size_t> &channels, int64_t start_tick,
-                  int64_t stop_tick) const {
+  nb::list window(const std::vector<size_t> &channels, int64_t start_ns,
+                  int64_t stop_ns) const {
     auto reader = get();
     std::vector<std::vector<double>> values;
     {
       nb::gil_scoped_release release;
-      reader->read_physical_into(channels, {Tick{start_tick}, Tick{stop_tick}},
+      reader->read_physical_into(channels,
+                                 {std::chrono::nanoseconds{start_ns},
+                                  std::chrono::nanoseconds{stop_ns}},
                                  values);
     }
     nb::list result;
@@ -129,7 +132,7 @@ NB_MODULE(fastbdf, m) {
             }
             return events;
           },
-          "List of (onset_ticks, duration_ticks_or_None, text_bytes).")
+          "List of (onset_ns, duration_ns_or_None, text_bytes).")
       .def(
           "sample_rate",
           [](const PythonReader &self, size_t channel) {
@@ -147,11 +150,11 @@ NB_MODULE(fastbdf, m) {
       .def("read_digital_into", &PythonReader::read_into<std::int32_t>,
            "channel"_a, "start"_a, "out"_a.noconvert())
       .def("read_physical_window_into", &PythonReader::window_into,
-           "channels"_a, "start_tick"_a, "stop_tick"_a, "out"_a.noconvert(),
+           "channels"_a, "start_ns"_a, "stop_ns"_a, "out"_a.noconvert(),
            "Fill a writable C-contiguous float64 matrix. Each selected channel "
            "must have exactly out.shape[1] native samples in the window.")
       .def("read_physical_window", &PythonReader::window, "channels"_a,
-           "start_tick"_a, "stop_tick"_a,
+           "start_ns"_a, "stop_ns"_a,
            "Return one NumPy array per channel, in file units, for "
-           "[start_tick, stop_tick). A tick is 100 ns.");
+           "[start_ns, stop_ns). Times are integer nanoseconds.");
 }

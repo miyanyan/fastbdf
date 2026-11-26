@@ -5,7 +5,6 @@
 #include <cstdint>
 #include <ctime>
 #include <optional>
-#include <ratio>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -30,9 +29,16 @@ struct WriterOptions {
 };
 
 enum class Format { edf, bdf, edf_plus, bdf_plus };
-using Tick = std::chrono::duration<std::int64_t, std::ratio<1, 10'000'000>>;
+// Exact elapsed time: whole_nanoseconds plus numerator / denominator of one
+// nanosecond.
+struct SampleTime {
+  std::chrono::nanoseconds whole_nanoseconds{};
+  std::uint32_t numerator{};
+  std::uint32_t denominator{1};
+};
+
 struct TimeRange {
-  Tick begin{}, end{};
+  std::chrono::nanoseconds begin{}, end{};
 };
 
 struct SignalSpec {
@@ -83,7 +89,8 @@ inline std::chrono::local_seconds local_now() {
 struct RecordingInfo {
   Format format = Format::edf_plus;
   std::chrono::local_seconds start = detail::local_now();
-  Tick subsecond{}, record_duration = std::chrono::seconds{1};
+  std::chrono::nanoseconds subsecond{},
+      record_duration = std::chrono::seconds{1};
   std::string patient, recording;
   std::string patient_code, patient_name, sex, birthdate, patient_additional;
   std::string admin_code, technician, equipment, recording_additional;
@@ -105,8 +112,8 @@ struct RecordingInfo {
 };
 
 struct Annotation {
-  Tick onset{};
-  std::optional<Tick> duration;
+  std::chrono::nanoseconds onset{};
+  std::optional<std::chrono::nanoseconds> duration;
   std::string text;
 };
 

@@ -55,7 +55,7 @@ int main() {
     throws([&] { w.write_samples(bad); });
     double physical[] = {-1e300, 0, 1e300};
     w.write_samples(physical);
-    w.add_annotation({Tick{1}, {}, "late \xc3\xa9"});
+    w.add_annotation({std::chrono::nanoseconds{1}, {}, "late \xc3\xa9"});
     w.flush();
     w.finish();
     w.finish();
@@ -72,7 +72,7 @@ int main() {
   {
     auto w = Writer::create(path, info);
     throws([&] {
-      w.add_annotation({Tick{}, Tick{1000000000000001}, "long duration"});
+      w.add_annotation({std::chrono::nanoseconds{}, std::chrono::nanoseconds{-1}, "negative duration"});
     });
     throws([&] { w.finish(); });
     check(!w.finished());
@@ -103,7 +103,7 @@ int main() {
     auto w = Writer::create(path, info, opts);
     std::int32_t data[6]{};
     w.write_digital_record(data);
-    w.add_annotation({Tick{}, {}, std::string(512, 'a')});
+    w.add_annotation({std::chrono::nanoseconds{}, {}, std::string(512, 'a')});
     w.finish();
     check(contents(path).find(std::string(40, 'a') + '\x14') !=
           std::string::npos);
@@ -121,7 +121,7 @@ int main() {
     RecordingInfo only;
     auto w = Writer::create(path, only);
     for (int i = 0; i < 20; ++i)
-      w.add_annotation({Tick{i}, {}, "latin\xe9"});
+      w.add_annotation({std::chrono::nanoseconds{i}, {}, "latin\xe9"});
     w.finish();
     check(w.records_written() > 0);
     check(contents(path).find("latin\xe9") != std::string::npos);
@@ -134,9 +134,9 @@ int main() {
     opts.annotation_signals = 2;
     RecordingInfo only;
     auto w = Writer::create(path, only, opts);
-    w.add_annotation({Tick{}, {}, std::string(22, 'a')});
-    w.add_annotation({Tick{}, {}, std::string(27, 'b')});
-    w.add_annotation({Tick{}, {}, "c"});
+    w.add_annotation({std::chrono::nanoseconds{}, {}, std::string(22, 'a')});
+    w.add_annotation({std::chrono::nanoseconds{}, {}, std::string(27, 'b')});
+    w.add_annotation({std::chrono::nanoseconds{}, {}, "c"});
     w.finish();
     check(w.records_written() == 2);
     const auto bytes = contents(path);
@@ -150,8 +150,8 @@ int main() {
     auto w = Writer::create(path, info, opts);
     std::int32_t data[6]{};
     w.write_digital_record(data);
-    w.add_annotation({Tick{}, {}, std::string(22, 'a')});
-    w.add_annotation({Tick{}, {}, "later"});
+    w.add_annotation({std::chrono::nanoseconds{}, {}, std::string(22, 'a')});
+    w.add_annotation({std::chrono::nanoseconds{}, {}, "later"});
     throws([&] { w.finish(); });
     check(w.records_written() == 1);
     w.write_digital_record(data);
@@ -163,7 +163,7 @@ int main() {
     WriterOptions opts;
     opts.annotation_bytes_per_signal = 32;
     auto w = Writer::create(path, RecordingInfo{}, opts);
-    w.add_annotation({Tick{}, {}, std::string(23, 'a')});
+    w.add_annotation({std::chrono::nanoseconds{}, {}, std::string(23, 'a')});
     throws([&] { w.finish(); });
     check(w.records_written() == 0);
   }
@@ -198,10 +198,10 @@ int main() {
   }
   {
     RecordingInfo only;
-    only.record_duration = Tick{0};
+    only.record_duration = std::chrono::nanoseconds{0};
     auto w = Writer::create(path, only);
     for (int i = 0; i < 30; ++i)
-      w.add_annotation({Tick{i}, Tick{0}, "zero duration"});
+      w.add_annotation({std::chrono::nanoseconds{i}, std::chrono::nanoseconds{0}, "zero duration"});
     w.finish();
     check(w.records_written() > 1);
     check(contents(path).substr(244, 8) == "0       ");

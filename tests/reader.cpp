@@ -113,6 +113,10 @@ int main() {
     check(r.read_digital(ids, {500ms, 2500ms}) ==
               std::vector<std::vector<std::int32_t>>{{10, -10}, {0}},
           "discontinuous window");
+    const auto after_gap = r.sample_time(ids[0], 2);
+    check(after_gap.whole_nanoseconds == 2s && after_gap.numerator == 0 &&
+              r.sample_index_at_or_after(ids[0], 1500ms) == 2,
+          "sample time includes the discontinuity");
     check(r.read_digital(ids, {1s, 2s}) ==
               std::vector<std::vector<std::int32_t>>(2),
           "gap window");

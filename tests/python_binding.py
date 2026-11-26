@@ -11,6 +11,9 @@ import mne
 import numpy as np
 
 
+NS_PER_SECOND = 1_000_000_000
+
+
 def rejects(call, *args):
     try:
         call(*args)
@@ -27,7 +30,7 @@ def check_file(path):
     assert [s.unit for s in signals] == ["uV", "V"]
     annotations = reader.annotations
     assert annotations == (
-        [(2500000, 1250000, "event α".encode()), (12500000, None, b"end")]
+        [(250000000, 125000000, "event α".encode()), (1250000000, None, b"end")]
         if "plus" in path.stem
         else []
     )
@@ -101,26 +104,33 @@ def check_file(path):
 
     ids = [1, 0, 1]
     for start, stop in [
-        (0, 20000000),
-        (2500000, 12500000),
-        (1, 5000000),
-        (5000000, 5000000),
-        (20000000, 30000000),
-        (19000000, 30000000),
+        (0, 2000000000),
+        (250000000, 1250000000),
+        (1, 500000000),
+        (500000000, 500000000),
+        (2000000000, 3000000000),
+        (1900000000, 3000000000),
     ]:
         result = reader.read_physical_window(ids, start, stop)
         assert isinstance(result, list) and len(result) == len(ids)
         for channel, output in zip(ids, result):
             rate = [32, 14][channel]
-            first = (start * rate + 9999999) // 10000000
-            last = (stop * rate + 9999999) // 10000000
+            first = (start * rate + NS_PER_SECOND - 1) // NS_PER_SECOND
+            last = (stop * rate + NS_PER_SECOND - 1) // NS_PER_SECOND
             assert isinstance(output, np.ndarray)
             assert output.dtype == np.float64 and output.ndim == 1
             assert output.flags.writeable
             np.testing.assert_allclose(
                 output, expected_physical[channel][first:last], rtol=2e-12, atol=1e-13
             )
-    assert reader.read_physical_window([], 0, 20000000) == []
+    assert reader.read_physical_window([], 0, 2000000000) == []
+    # Public keyword arguments carry explicit nanosecond units.
+    keyword_window = reader.read_physical_window(
+        channels=[0], start_ns=1, stop_ns=31250001
+    )
+    np.testing.assert_allclose(
+        keyword_window[0], expected_physical[0][1:2], rtol=2e-12, atol=1e-13
+    )
     for channel in [-1, 2]:
         rejects(reader.sample_rate, channel)
         rejects(reader.sample_count, channel)
@@ -134,7 +144,7 @@ def check_file(path):
         rectangular = np.empty((2, rate), dtype=np.float64)
         assert (
             reader.read_physical_window_into(
-                [channel, channel], 0, 10000000, rectangular
+                [channel, channel], 0, NS_PER_SECOND, rectangular
             )
             is None
         )
@@ -146,7 +156,7 @@ def check_file(path):
         )
     assert (
         reader.read_physical_window_into(
-            [], 0, 10000000, np.empty((0, 0), dtype=np.float64)
+            [], 0, NS_PER_SECOND, np.empty((0, 0), dtype=np.float64)
         )
         is None
     )
@@ -160,7 +170,7 @@ def check_file(path):
     )
     assert (
         reader.read_physical_window_into(
-            [1, 0, 1], 5000000, 5000000, np.empty((3, 0), dtype=np.float64)
+            [1, 0, 1], 500000000, 500000000, np.empty((3, 0), dtype=np.float64)
         )
         is None
     )
@@ -171,21 +181,21 @@ def check_file(path):
         (1, 32), dtype=np.float64, buffer=bytearray(32 * 8 + 1), offset=1
     )
     for channels, start, stop, output in [
-        ([0, 1], 0, 10000000, np.empty((2, 32))),
-        ([0], 0, 10000000, np.empty((2, 32))),
-        ([0], 0, 10000000, np.empty((1, 31))),
-        ([0], 0, 10000000, np.empty(32)),
-        ([0], 0, 10000000, np.empty((1, 32), dtype=np.float32)),
-        ([0], 0, 10000000, np.empty((1, 64))[:, ::2]),
-        ([0], 0, 10000000, readonly),
-        ([0], 0, 10000000, unaligned),
-        ([2], 0, 10000000, valid),
-        ([-1], 0, 10000000, valid),
-        ([0], -1, 10000000, valid),
-        ([0], 10000000, 0, valid),
+        ([0, 1], 0, NS_PER_SECOND, np.empty((2, 32))),
+        ([0], 0, NS_PER_SECOND, np.empty((2, 32))),
+        ([0], 0, NS_PER_SECOND, np.empty((1, 31))),
+        ([0], 0, NS_PER_SECOND, np.empty(32)),
+        ([0], 0, NS_PER_SECOND, np.empty((1, 32), dtype=np.float32)),
+        ([0], 0, NS_PER_SECOND, np.empty((1, 64))[:, ::2]),
+        ([0], 0, NS_PER_SECOND, readonly),
+        ([0], 0, NS_PER_SECOND, unaligned),
+        ([2], 0, NS_PER_SECOND, valid),
+        ([-1], 0, NS_PER_SECOND, valid),
+        ([0], -1, NS_PER_SECOND, valid),
+        ([0], NS_PER_SECOND, 0, valid),
     ]:
         rejects(reader.read_physical_window_into, channels, start, stop, output)
-    retained = reader.read_physical_window(ids, 0, 20000000)
+    retained = reader.read_physical_window(ids, 0, 2000000000)
     reader.close()
     reader.close()  # Closing twice is harmless.
     rejects(reader.sample_count, 0)
@@ -194,14 +204,14 @@ def check_file(path):
     rejects(getattr, reader, "annotations")
     rejects(reader.read_physical_into, 0, 0, np.empty(1))
     rejects(reader.read_physical_window, [0], 0, 1)
-    rejects(reader.read_physical_window_into, [0], 0, 10000000, valid)
+    rejects(reader.read_physical_window_into, [0], 0, NS_PER_SECOND, valid)
     del method
     del reader
     gc.collect()
     assert [s.label for s in signals] == ["channel0", "channel1"]
     assert signals[0].digital_min == minimum
     assert annotations == (
-        [(2500000, 1250000, "event α".encode()), (12500000, None, b"end")]
+        [(250000000, 125000000, "event α".encode()), (1250000000, None, b"end")]
         if "plus" in path.stem
         else []
     )

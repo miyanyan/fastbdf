@@ -103,7 +103,7 @@ inline WriteLayout prepare_layout(RecordingInfo &info, WriterOptions &options) {
   if (info.record_duration.count() < 0 ||
       (info.record_duration.count() == 0 &&
        (!layout.plus || !info.signals.empty())) ||
-      seconds(info.record_duration.count(), false).size() >
+      format_seconds(info.record_duration, false).size() >
           fixed_header::record_duration.width)
     throw Error("invalid data record duration");
   if (info.subsecond.count() < 0 || info.subsecond >= std::chrono::seconds{1} ||
@@ -221,7 +221,7 @@ inline std::string encode_header(const RecordingInfo &info,
       layout.plus ? (layout.sample_bytes == 3 ? "BDF+C" : "EDF+C") : "");
   put(fixed_header::record_count, "-1");
   put(fixed_header::record_duration,
-      seconds(info.record_duration.count(), false));
+      format_seconds(info.record_duration, false));
   put(fixed_header::signal_count, std::to_string(ns));
   std::vector<SignalSpec> specs = info.signals;
   for (std::size_t i = 0; i < options.annotation_signals; ++i) {

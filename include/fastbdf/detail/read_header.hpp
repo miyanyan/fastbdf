@@ -190,7 +190,7 @@ inline ReadHeader read_header(const FileSource &file) {
   if (declared < -1)
     throw Error("Invalid record count");
   header.info.record_duration =
-      ticks(fixed_header::record_duration.read(f), "record duration");
+      parse_seconds(fixed_header::record_duration.read(f), "record duration");
   if (header.info.record_duration.count() < 0)
     throw Error("Record duration must be nonnegative");
   std::vector<char> raw(static_cast<std::size_t>(ns) * signal_header::size);

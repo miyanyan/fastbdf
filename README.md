@@ -32,6 +32,8 @@ auto first = file.sample_index_at_or_after(ids[0], 30s);
 
 `values[i]` 对应 `ids[i]`，各通道保留自己的样本数。时间相对于实际记录起点，窗口包含起点并排除终点。超出文件尾的部分返回空或短结果。通道 ID 从 0 开始，仅计入普通信号。标签有重名时可以遍历 `signals()` 选择 ID。反复翻页可用 `read_physical_into(ids, range, values)` 或 `read_digital_into` 复用结果容量。
 
+对于已有的样本，`file.sample_time(id, index)` 返回相对于第一条记录的精确采样时间，包含记录间断。结果由 `std::chrono::nanoseconds` 类型的 `whole_nanoseconds` 和额外的 `numerator / denominator` 纳秒组成。例如，1 秒记录内有 3 个样本时，下标 1 对应 333,333,333 个整纳秒加 1/3 纳秒。
+
 ```cpp
 std::array<std::int32_t, 4096> chunk;
 auto cursor = file.cursor(ids[0]);
@@ -77,11 +79,11 @@ writer.finish();
 | 连续 EDF+、BDF+ | 读写结构化元数据、负增益、亚秒起点、混合采样率、UTF-8 事件、多注释通道及仅含注释的文件 |
 | 不连续 EDF+D、BDF+D | 可读取有正记录时长的波形，`record_start(r)` 返回考虑间断后的相对时间。时间窗跳过间断，不填充样本。Writer 输出连续记录。零记录时长仅支持纯注释文件 |
 | 数值 | digital 输出按头部数字范围截断；physical 依据头部标定转换。physical 写入将物理端点精确映射到对应数字端点，越界值饱和，区间内换算后向零取整。packed 写保留输入字节 |
-| 时间与编码 | `Tick` 精度为 100 ns。事件缺失时长用 `std::nullopt`，零时长用 `Tick{0}`。事件正文统一使用 `std::string`。调用方负责提供符合 EDF+ 规范的 UTF-8 字节。头部字段由调用方提供可打印 ASCII 字节 |
+| 时间与编码 | 时间使用标准 `std::chrono::nanoseconds`，精度为 1 ns。事件缺失时长用 `std::nullopt`，零时长用 `std::chrono::nanoseconds{0}`。事件正文统一使用 `std::string`。调用方负责提供符合 EDF+ 规范的 UTF-8 字节。头部字段由调用方提供可打印 ASCII 字节 |
 | 注释读取 | 默认 `lazy` 在首次访问 `annotations()` 时加载。`none` 跳过事件，`all` 在打开时加载全部，`until_recording_ends` 复现 EDFlib 的停止标记规则。延迟加载时，连续记录的首次打开只需读取头部和第一条记录的计时信息；不连续记录要建立时间索引 |
 | 错误与文件生命周期 | 捕获 `fastbdf::Error` 并查看 `code()`。应用直接持有 `Reader` 和 `Writer`；读完后释放 Reader，写完后调用 `Writer::finish()` |
 
-连续记录的总时长可以超出 `Tick` 的表示范围。按样本下标仍可读取末尾波形；若请求的记录起点超出范围，`record_start(r)` 会抛出 `fastbdf::Error`。时间窗的两个端点及解析的 EDF+/BDF+ 时间戳仍须能用 `Tick` 表示。
+连续记录的总时长可以超出 `std::chrono::nanoseconds` 的表示范围。按样本下标仍可读取末尾波形；若请求的记录起点超出范围，`record_start(r)` 会抛出 `fastbdf::Error`。时间窗的两个端点及解析的 EDF+/BDF+ 时间戳仍须能用 `std::chrono::nanoseconds` 表示。
 
 EDFlib 的 `*_hr` 注释写函数接收微秒，旧函数接收 100 微秒单位，迁移时使用相应的 `std::chrono::duration` 转换。EDFlib 用户从原生 C++ 接口迁移，本项目不导出其 C ABI。
 
@@ -92,7 +94,7 @@ EDFlib 的 `*_hr` 注释写函数接收微秒，旧函数接收 100 微秒单位
 双向测试覆盖连续 EDF+ 和 BDF+。测试用 EDFlib 生成文件，由 fastbdf 读取实际头部、样本和事件并重新生成文件，最后由 EDFlib 打开并核对。经典 EDF、BDF 可以由 fastbdf 生成后交给 EDFlib 读取；EDFlib 的写接口只生成 Plus 格式。
 
 - 空描述事件保留起点、时长和顺序。每条记录开头专门用于计时的空描述不会计入事件数。
-- 事件时间的小数部分按 100 ns 向零截断。EDFlib 读取持续时间时仅转换前 15 个字符，fastbdf 读取遵循同一规则。写入会拒绝超过此长度的持续时间。
+- 事件时间的小数部分保留至纳秒，超过 9 位的小数向零截断。fastbdf 解析完整的 TAL 时间字段，不采用 EDFlib 持续时间的前 15 字符限制；与 EDFlib 交换文件时应注意其时间精度及解析范围。
 - 事件正文按字节处理。写入最多取 40 字节，遇到 NUL 提前结束，其余小于 0x20 的字节及 DEL（0x7F）替换为句点。读取最多返回 512 字节，允许 TAB、LF、CR，拒绝正文中其余 ASCII 控制字符及 DEL。两端均不校验或转换 UTF-8，按字节截断可能切开多字节字符。结构化患者和记录字段中的附加说明保留原有下划线及内部空格。
 - 有波形通道的文件必须写完至少一条记录才能成功 `finish()`。可在补齐后重试。
 
@@ -108,12 +110,12 @@ with fastbdf.Reader("recording.bdf") as reader:
     signal = reader.signals[0]
     codes = np.empty(1024, dtype=np.int32)
     n = reader.read_digital_into(0, 0, codes)
-    first_second = reader.read_physical_window([0, 1], 0, 10_000_000)
+    first_second = reader.read_physical_window([0, 1], 0, 1_000_000_000)
 ```
 
-`read_digital_into` 和 `read_physical_into` 从通道的原始样本下标开始，返回实际写入点数。使用可写、连续、对齐的 NumPy 数组，数字码用 `int32`，物理值用 `float64`，单位见 `signal.unit`。时间窗使用 100 ns 的整数 tick，包含起点并排除终点。各通道样本数相同时，`read_physical_window_into(ids, start_tick, stop_tick, out)` 可直接填充形状为「通道数 × 样本数」的二维数组。混合采样率可用 `read_physical_window`，按请求顺序返回独立的一维数组。I/O 期间释放 GIL，并发请求应使用独立的输出缓冲区。
+`read_digital_into` 和 `read_physical_into` 从通道的原始样本下标开始，返回实际写入点数。使用可写、连续、对齐的 NumPy 数组，数字码用 `int32`，物理值用 `float64`，单位见 `signal.unit`。时间窗使用整数纳秒，包含起点并排除终点。各通道样本数相同时，`read_physical_window_into(ids, start_ns, stop_ns, out)` 可直接填充形状为「通道数 × 样本数」的二维数组。混合采样率可用 `read_physical_window`，按请求顺序返回独立的一维数组。I/O 期间释放 GIL，并发请求应使用独立的输出缓冲区。
 
-Python 默认打开时解析事件。`reader.annotations` 的元素是 `(onset_ticks, duration_ticks_or_None, text_bytes)`，也可在打开时指定 `annotation_mode=fastbdf.AnnotationMode.lazy`。构建、测试及基准命令见 [Python 绑定与 MNE 性能对照](docs/python-benchmark.md)。
+Python 默认打开时解析事件。`reader.annotations` 的元素是 `(onset_ns, duration_ns_or_None, text_bytes)`，也可在打开时指定 `annotation_mode=fastbdf.AnnotationMode.lazy`。构建、测试及基准命令见 [Python 绑定与 MNE 性能对照](docs/python-benchmark.md)。
 
 ## 与 MNE-Python 对照
 

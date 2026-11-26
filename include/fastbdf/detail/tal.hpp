@@ -8,7 +8,8 @@
 
 namespace fastbdf::detail {
 
-inline Tick tal_time(std::string_view text, bool is_duration) {
+inline std::chrono::nanoseconds tal_time(std::string_view text,
+                                         bool is_duration) {
   auto digits = text;
   if (!is_duration) {
     if (digits.empty() || (digits.front() != '+' && digits.front() != '-'))
@@ -20,16 +21,13 @@ inline Tick tal_time(std::string_view text, bool is_duration) {
       (dot != digits.npos && digits.find('.', dot + 1) != digits.npos) ||
       digits.find_first_not_of("0123456789.") != digits.npos)
     throw Error("Invalid TAL time");
-  // EDFlib 1.27 validates the full duration, then copies 15 characters
-  // before converting it to ticks. Onsets use the complete spelling.
-  return ticks(is_duration ? text.substr(0, edflib_limits::duration_text_chars)
-                           : text,
-               "TAL time");
+  return parse_seconds(text, "TAL time");
 }
 
 // TAL bytes are stored consecutively, including all bytes of 16/24 bit words.
 inline bool parse_tals(std::span<const char> bytes, bool first_channel,
-                       AnnotationMode mode, Tick &record_onset,
+                       AnnotationMode mode,
+                       std::chrono::nanoseconds &record_onset,
                        std::vector<Annotation> &annotations) {
   std::size_t p = 0;
   if (!first_channel && mode == AnnotationMode::none)
@@ -51,7 +49,7 @@ inline bool parse_tals(std::span<const char> bytes, bool first_channel,
     if (sep == tal.npos)
       throw Error("Invalid annotation onset");
     auto onset = tal_time(tal.substr(0, sep), false);
-    std::optional<Tick> duration;
+    std::optional<std::chrono::nanoseconds> duration;
     auto q = sep;
     if (tal[q] == '\x15') {
       auto e = tal.find('\x14', q + 1);
@@ -108,9 +106,9 @@ inline std::string timekeeping(const RecordingInfo &info,
                                 info.subsecond.count()) /
                                duration))
     throw Error("record time overflow");
-  auto s = seconds(static_cast<std::int64_t>(record) * duration +
-                       info.subsecond.count(),
-                   true);
+  auto s = format_seconds(
+      info.record_duration * static_cast<std::int64_t>(record) + info.subsecond,
+      true);
   s.append("\x14\x14\0", 3);
   return s;
 }
@@ -119,10 +117,10 @@ inline std::string annotation_tal(const RecordingInfo &info,
   if (a.onset.count() >
       (std::numeric_limits<std::int64_t>::max)() - info.subsecond.count())
     throw Error("annotation onset overflow");
-  auto s = seconds(a.onset.count() + info.subsecond.count(), true);
+  auto s = format_seconds(a.onset + info.subsecond, true);
   if (a.duration) {
     s += '\x15';
-    s += seconds(a.duration->count(), false);
+    s += format_seconds(*a.duration, false);
   }
   s += '\x14';
   s += a.text;

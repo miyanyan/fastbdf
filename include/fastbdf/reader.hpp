@@ -40,7 +40,7 @@ class Reader {
   std::optional<detail::FileSource> file_;
   std::vector<std::uint64_t> cursors_;
   mutable std::vector<Annotation> annotations_;
-  std::vector<Tick> record_onsets_;
+  std::vector<std::chrono::nanoseconds> record_onsets_;
   mutable bool annotations_loaded_ = true;
   std::unique_ptr<std::mutex> annotation_mutex_ =
       std::make_unique<std::mutex>();
@@ -53,33 +53,38 @@ class Reader {
       annotation.onset -= header_.info.subsecond;
     }
   }
-  // Exact ceil(a*b/c), with a<c and b<=UINT32_MAX, without nonstandard
-  // 128-bit integers or floating-point loss at sample boundaries.
-  static std::uint64_t sample_fraction(std::uint64_t a, std::uint32_t b,
-                                       std::uint64_t c) {
-    if (!a)
-      return 0;
-    if (a <= (std::numeric_limits<std::uint64_t>::max)() / b) {
-      const auto p = a * b;
-      return p / c + (p % c != 0);
+  // For index < samples, the whole part fits within duration. The leftover
+  // product fits in 64 bits because both factors fit in 32 bits.
+  static SampleTime time_within_record(std::uint32_t index,
+                                       std::uint32_t samples,
+                                       std::uint64_t duration) {
+    const auto part = index * (duration % samples);
+    const auto whole = index * (duration / samples) + part / samples;
+    return {std::chrono::nanoseconds{
+                static_cast<std::chrono::nanoseconds::rep>(whole)},
+            static_cast<std::uint32_t>(part % samples), samples};
+  }
+  // First sample at or after elapsed nanoseconds within a record.
+  static std::uint64_t
+  sample_offset_at_or_after(std::chrono::nanoseconds elapsed_time,
+                            std::uint32_t samples, std::uint64_t duration) {
+    const auto elapsed = static_cast<std::uint64_t>(elapsed_time.count());
+    if (elapsed <= (std::numeric_limits<std::uint64_t>::max)() / samples) {
+      const auto product = elapsed * samples;
+      return product / duration + (product % duration != 0);
     }
-    std::uint64_t quotient = 0, remainder = 0;
-    for (int bit = 31; bit >= 0; --bit) {
-      quotient *= 2;
-      remainder *= 2;
-      if (remainder >= c) {
-        remainder -= c;
-        ++quotient;
-      }
-      if ((b >> bit) & 1) {
-        remainder += a;
-        if (remainder >= c) {
-          remainder -= c;
-          ++quotient;
-        }
-      }
+
+    // For an integer nanosecond target, comparing whole nanoseconds is exact.
+    std::uint32_t first = 0, last = samples;
+    while (first < last) {
+      const auto i = first + (last - first) / 2;
+      if (time_within_record(i, samples, duration).whole_nanoseconds <
+          elapsed_time)
+        first = i + 1;
+      else
+        last = i;
     }
-    return quotient + (remainder != 0);
+    return first;
   }
   void read_bytes(std::uint64_t offset, std::span<char> out) const {
     if (!file_)
@@ -330,7 +335,8 @@ public:
 
 private:
   bool read_annotation_record(std::uint64_t record, AnnotationMode mode,
-                              std::vector<char> &bytes, Tick &onset) const {
+                              std::vector<char> &bytes,
+                              std::chrono::nanoseconds &onset) const {
     bool first = true;
     for (const auto &channel : header_.channels) {
       if (!channel.annotation)
@@ -348,11 +354,12 @@ private:
     }
     return false;
   }
-  void validate_next_onset(Tick previous, Tick onset) const {
-    const Tick duration = header_.info.record_duration;
-    if (previous > (Tick::max)() - duration)
+  void validate_next_onset(std::chrono::nanoseconds previous,
+                           std::chrono::nanoseconds onset) const {
+    const std::chrono::nanoseconds duration = header_.info.record_duration;
+    if (previous > (std::chrono::nanoseconds::max)() - duration)
       throw Error("Record onset overflows");
-    const Tick expected = previous + duration;
+    const std::chrono::nanoseconds expected = previous + duration;
     if (header_.discontinuous ? onset < expected : onset != expected)
       throw Error("Invalid record onset sequence");
   }
@@ -377,14 +384,14 @@ private:
       annotations_loaded_ = mode != AnnotationMode::lazy;
       bool stopped = false;
       std::vector<char> bytes;
-      Tick previous{};
+      std::chrono::nanoseconds previous{};
       const auto scan_records =
           (!header_.discontinuous &&
            (mode == AnnotationMode::none || mode == AnnotationMode::lazy))
               ? std::min<std::uint64_t>(1, header_.records)
               : header_.records;
       for (std::uint64_t r = 0; r < scan_records; ++r) {
-        Tick onset{};
+        std::chrono::nanoseconds onset{};
         const auto scan_mode = stopped || mode == AnnotationMode::lazy
                                    ? AnnotationMode::none
                                    : mode;
@@ -393,7 +400,7 @@ private:
         if (r == 0) {
           header_.info.subsecond = onset;
           if (header_.info.subsecond.count() < 0 ||
-              header_.info.subsecond.count() >= detail::ticks_per_second)
+              header_.info.subsecond.count() >= detail::nanoseconds_per_second)
             throw Error("Invalid first record onset");
         }
         if (r)
@@ -419,10 +426,10 @@ public:
       std::uint64_t record = 0;
       try {
         std::vector<char> bytes;
-        Tick previous{};
+        std::chrono::nanoseconds previous{};
         for (std::uint64_t r = 0; r < header_.records; ++r) {
           record = r;
-          Tick onset{};
+          std::chrono::nanoseconds onset{};
           read_annotation_record(r, AnnotationMode::all, bytes, onset);
           if (r)
             validate_next_onset(previous, onset);
@@ -444,7 +451,7 @@ public:
     }
     return annotations_;
   }
-  const std::vector<Tick> &record_onsets() const noexcept {
+  const std::vector<std::chrono::nanoseconds> &record_onsets() const noexcept {
     return record_onsets_;
   }
   std::uint64_t record_count() const noexcept { return header_.records; }
@@ -454,7 +461,7 @@ public:
                            channel(id).spec.samples_per_record);
   }
   // Elapsed from the first record, including any discontinuities.
-  Tick record_start(std::uint64_t record) const {
+  std::chrono::nanoseconds record_start(std::uint64_t record) const {
     if (record >= header_.records)
       throw Error("Record index out of range");
     if (header_.discontinuous)
@@ -462,43 +469,60 @@ public:
              header_.info.subsecond;
     const auto duration = header_.info.record_duration.count();
     if (duration &&
-        record > static_cast<std::uint64_t>((Tick::max)().count() / duration))
-      throw Error("Record start exceeds Tick range");
-    return Tick{static_cast<std::int64_t>(record) * duration};
+        record > static_cast<std::uint64_t>(
+                     (std::chrono::nanoseconds::max)().count() / duration))
+      throw Error("Record start exceeds nanosecond range");
+    return std::chrono::nanoseconds{static_cast<std::int64_t>(record) *
+                                    duration};
+  }
+
+  // Time relative to the first record, retaining fractions of a nanosecond.
+  SampleTime sample_time(std::size_t id, std::uint64_t index) const {
+    const auto samples = channel(id).spec.samples_per_record;
+    const auto start = record_start(index / samples);
+    auto offset =
+        time_within_record(static_cast<std::uint32_t>(index % samples), samples,
+                           header_.info.record_duration.count());
+    if (offset.whole_nanoseconds > (std::chrono::nanoseconds::max)() - start)
+      throw Error("Sample time exceeds nanosecond range");
+    offset.whole_nanoseconds += start;
+    return offset;
   }
 
   // A time inside a gap maps to the next sample. Beyond EOF returns
   // sample_count(id).
-  std::uint64_t sample_index_at_or_after(std::size_t id, Tick time) const {
+  std::uint64_t sample_index_at_or_after(std::size_t id,
+                                         std::chrono::nanoseconds time) const {
     const auto spr = channel(id).spec.samples_per_record;
-    if (time < Tick::zero())
+    if (time < std::chrono::nanoseconds::zero())
       throw Error("Negative sample lookup time");
     if (!header_.records)
       return 0;
     const auto duration = header_.info.record_duration.count();
     std::uint64_t record;
     if (header_.discontinuous) {
-      auto next = std::upper_bound(record_onsets_.begin(), record_onsets_.end(),
-                                   time, [&](Tick t, Tick onset) {
-                                     return t < onset - header_.info.subsecond;
-                                   });
+      auto next = std::upper_bound(
+          record_onsets_.begin(), record_onsets_.end(), time,
+          [&](std::chrono::nanoseconds t, std::chrono::nanoseconds onset) {
+            return t < onset - header_.info.subsecond;
+          });
       record = static_cast<std::uint64_t>(next - record_onsets_.begin() - 1);
     } else {
       record = static_cast<std::uint64_t>(time.count() / duration);
     }
     if (record >= header_.records)
       return sample_count(id);
-    const auto delta = (time - record_start(record)).count();
-    if (delta >= duration)
+    const auto delta = time - record_start(record);
+    if (delta >= header_.info.record_duration)
       return (record + 1) * spr;
-    return record * spr + sample_fraction(static_cast<std::uint64_t>(delta),
-                                          spr,
-                                          static_cast<std::uint64_t>(duration));
+    return record * spr + sample_offset_at_or_after(
+                              delta, spr, static_cast<std::uint64_t>(duration));
   }
 
   double sample_rate(std::size_t id) const {
     return static_cast<double>(channel(id).spec.samples_per_record) *
-           detail::ticks_per_second / header_.info.record_duration.count();
+           detail::nanoseconds_per_second /
+           header_.info.record_duration.count();
   }
   std::size_t select_unique(std::string_view label) const {
     std::size_t found = header_.info.signals.size();

@@ -24,7 +24,7 @@ import mne
 import numpy as np
 
 SCALES = {"V": 1.0, "mV": 1e-3, "uV": 1e-6, "µV": 1e-6, "μV": 1e-6, "nV": 1e-9}
-TICKS = 10_000_000
+NANOSECONDS_PER_SECOND = 1_000_000_000
 
 
 def synthetic(path, records, rate=512, channels=64):
@@ -111,10 +111,10 @@ def selection(path, requested):
     return candidates, float(rate), int(count)
 
 
-def fast_read(reader, channels, start_tick, stop_tick, count):
+def fast_read(reader, channels, start_ns, stop_ns, count):
     result = np.empty((len(channels), count), dtype=np.float64)
     reader.read_physical_window_into(
-        [c[0] for c in channels], start_tick, stop_tick, result
+        [c[0] for c in channels], start_ns, stop_ns, result
     )
     for row, (_, _, unit) in zip(result, channels):
         row *= SCALES[unit]
@@ -166,7 +166,7 @@ def memory_child(payload):
     count, rate = payload["count"], payload["rate"]
     if payload["engine"] == "fastbdf":
         with fastbdf.Reader(payload["path"]) as reader:
-            result = fast_read(reader, channels, 0, count * TICKS // int(rate), count)
+            result = fast_read(reader, channels, 0, count * NANOSECONDS_PER_SECOND // int(rate), count)
     else:
         with open_mne(payload["path"], [c[1] for c in channels]) as raw:
             result = raw.get_data(start=0, stop=count)
@@ -211,7 +211,7 @@ def benchmark(path, args, is_synthetic=False):
         raise ValueError("recording must contain at least ten seconds")
     if not rate.is_integer():
         raise ValueError(
-            "benchmark requires integer-Hz EEG sampling for exact tick alignment"
+            "benchmark requires integer-Hz EEG sampling for nanosecond window alignment"
         )
     names = [c[1] for c in channels]
     print(f"\n{path}: {len(channels)} EEG channels x {count} samples at {rate:g} Hz")
@@ -239,7 +239,7 @@ def benchmark(path, args, is_synthetic=False):
                 if engine == "fastbdf":
                     with fastbdf.Reader(str(path)) as reader:
                         result = fast_read(
-                            reader, channels, 0, stop * TICKS // int(rate), stop
+                            reader, channels, 0, stop * NANOSECONDS_PER_SECOND // int(rate), stop
                         )
                 else:
                     with open_mne(path, names) as raw:
@@ -259,16 +259,16 @@ def benchmark(path, args, is_synthetic=False):
     with fastbdf.Reader(str(path)) as reader, open_mne(path, names) as raw:
         # Same requests and outputs, resident readers; warm one request each.
         for run, (picks, start) in enumerate([windows[0]] + windows):
-            # Floor to the tick before each sample: the reader selects the first
-            # native sample at or after that tick. Windows may cross any record.
-            start_tick = start * TICKS // int(rate)
-            stop_tick = (start + length) * TICKS // int(rate)
+            # Floor to the nanosecond before each sample: the reader selects the first
+            # native sample at or after that nanosecond. Windows may cross any record.
+            start_ns = start * NANOSECONDS_PER_SECOND // int(rate)
+            stop_ns = (start + length) * NANOSECONDS_PER_SECOND // int(rate)
             results = {}
             selected = [channels[i] for i in picks]
             for engine in ("fastbdf", "MNE") if run % 2 == 0 else ("MNE", "fastbdf"):
                 begin = time.perf_counter()
                 if engine == "fastbdf":
-                    result = fast_read(reader, selected, start_tick, stop_tick, length)
+                    result = fast_read(reader, selected, start_ns, stop_ns, length)
                 else:
                     result = raw.get_data(picks=picks, start=start, stop=start + length)
                 elapsed = time.perf_counter() - begin
