@@ -12,3 +12,41 @@ dependencies = ["numpy>=1.26"]
 [tool.scikit-build]
 cmake.source-dir = "python"
 wheel.packages = []
+wheel.py-api = "cp312"
+
+[tool.pixi.workspace]
+channels = ["conda-forge"]
+platforms = ["win-64", "linux-64", "osx-arm64"]
+
+[tool.pixi.feature.cpp.dependencies]
+cmake = ">=3.25,<5"
+ninja = ">=1.11,<2"
+
+[tool.pixi.feature.cpp.tasks]
+configure = "cmake --preset dev"
+build = { cmd = "cmake --build --preset dev", depends-on = ["configure"] }
+test = { cmd = "ctest --preset dev", depends-on = ["build"] }
+bench = { cmd = "ctest --preset bench", depends-on = ["build"] }
+
+[tool.pixi.feature.mne.dependencies]
+python = "3.12.*"
+mne-base = ">=1.9,<2"
+edfio = ">=0.4,<1"
+numpy = ">=1.26,<3"
+nanobind = ">=3.1.0,<4"
+scikit-build-core = ">=1.1.2,<2"
+pip = ">=26.2.2,<27"
+
+[tool.pixi.feature.mne.tasks]
+install-binding = "python -m pip install --no-build-isolation --no-deps ."
+test-binding = { cmd = "ctest --preset python-binding", depends-on = ["install-binding", "build-mne"] }
+bench-binding = { cmd = "python tests/python_bench.py", depends-on = ["install-binding"] }
+configure-mne = "cmake --preset mne"
+build-mne = { cmd = "cmake --build --preset mne", depends-on = ["configure-mne"] }
+test-mne = { cmd = "ctest --preset mne", depends-on = ["build-mne"] }
+bench-mne = { cmd = "ctest --preset mne-bench", depends-on = ["build-mne"] }
+
+[tool.pixi.environments]
+# Keep the C++ environment independent of the Python package runtime.
+default = { features = ["cpp"], no-default-feature = true }
+mne = { features = ["cpp", "mne"], no-default-feature = true }
