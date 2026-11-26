@@ -640,6 +640,8 @@ static void verify_writer_formats(const std::filesystem::path &dir, bool bdf) {
         "long description and following TAL");
 }
 
+void write_code_tests(const std::filesystem::path &dir);
+
 int main(int argc, char **argv) {
   auto dir = std::filesystem::temp_directory_path() /
              ("fastbdf-interop-" +
@@ -653,6 +655,7 @@ int main(int argc, char **argv) {
       return 0;
     }
     std::filesystem::create_directory(dir);
+    write_code_tests(dir);
     for (bool bdf : {false, true}) {
       verify_writer_formats(dir, bdf);
       annotation_edges(dir, bdf);

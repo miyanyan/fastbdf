@@ -43,6 +43,7 @@ if(FASTBDF_INTEROP)
         target_link_libraries(fastbdf_${name} PRIVATE fastbdf::fastbdf EDFlib)
         add_test(NAME ${name} COMMAND fastbdf_${name})
     endforeach()
+    target_sources(fastbdf_interop PRIVATE tests/write_codes.cpp)
     set_tests_properties(bench PROPERTIES LABELS benchmark)
 endif()
 
