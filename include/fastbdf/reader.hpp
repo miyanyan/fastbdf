@@ -27,6 +27,15 @@ concept SampleOutput = std::convertible_to<R, std::span<std::int32_t>> ||
 // concurrently. Reopening the reader and its legacy implicit cursors require
 // synchronization.
 class Reader {
+  // Prefer per-channel reads when the requested data occupies under roughly
+  // one quarter of a record. Otherwise amortize I/O across whole records.
+  static constexpr unsigned sparse_read_divisor = 4;
+  std::uint64_t records_per_batch() const {
+    constexpr std::uint64_t target_batch_bytes = 8 * 1024 * 1024;
+    return std::max<std::uint64_t>(1,
+                                   target_batch_bytes / header_.record_bytes);
+  }
+
   detail::ReadHeader header_;
   std::optional<detail::FileSource> file_;
   std::vector<std::uint64_t> cursors_;
@@ -96,18 +105,21 @@ class Reader {
     const auto spr = ch.spec.samples_per_record;
     const auto first_record = first / spr,
                last_record = (first + count - 1) / spr;
-    if (first_record == last_record && count <= 1024 / header_.width) {
-      std::array<char, 1024> bytes;
+    std::array<char, 1024> small_buffer;
+    if (first_record == last_record &&
+        count <= small_buffer.size() / header_.width) {
       read_bytes(header_.header_bytes + first_record * header_.record_bytes +
                      ch.offset + (first % spr) * header_.width,
-                 std::span<char>(bytes).first(count * header_.width));
-      detail::decode(header_.width,
-                     reinterpret_cast<const unsigned char *>(bytes.data()),
-                     out.first(count), ch.spec);
+                 std::span<char>(small_buffer).first(count * header_.width));
+      detail::decode(
+          header_.width,
+          reinterpret_cast<const unsigned char *>(small_buffer.data()),
+          out.first(count), ch.spec);
       return count;
     }
     if (first_record == last_record ||
-        detail::product(spr, header_.width) * 4 < header_.record_bytes) {
+        detail::product(spr, header_.width) * sparse_read_divisor <
+            header_.record_bytes) {
       std::vector<char> bytes;
       std::size_t written = 0;
       for (auto r = first_record; r <= last_record; ++r) {
@@ -127,9 +139,7 @@ class Reader {
     }
     // Read contiguous slabs rather than issuing one seek per sample or record.
     // Bound temporary storage so enormous recordings remain streamable.
-    constexpr std::uint64_t target = 8 * 1024 * 1024;
-    const auto batch_records =
-        std::max<std::uint64_t>(1, target / header_.record_bytes);
+    const auto batch_records = records_per_batch();
     std::vector<char> buffer;
     std::size_t written = 0;
     for (auto r = first_record; r <= last_record;) {
@@ -202,13 +212,13 @@ class Reader {
     prepare_window(result, bounds);
     if (first_record >= end_record)
       return;
-    if (signals.size() == 1 || selected_bytes < header_.record_bytes / 4) {
+    if (signals.size() == 1 ||
+        selected_bytes < header_.record_bytes / sparse_read_divisor) {
       for (std::size_t i = 0; i < signals.size(); ++i)
         read_at(signals[i], bounds[i].first, std::span<T>(result[i]));
       return;
     }
-    const auto batch =
-        std::max<std::uint64_t>(1, 8 * 1024 * 1024 / header_.record_bytes);
+    const auto batch = records_per_batch();
     std::vector<char> buffer;
     for (auto r = first_record; r < end_record;) {
       const auto n = (std::min)(batch, end_record - r);

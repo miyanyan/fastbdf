@@ -31,7 +31,7 @@ inline Tick ticks(std::string_view s, const char *field) {
     while (p < t.size() && t[p] >= '0' && t[p] <= '9') {
       any = true;
       auto d = static_cast<unsigned>(t[p++] - '0');
-      if (digits < 7) {
+      if (digits < std::chrono::hh_mm_ss<Tick>::fractional_width) {
         fraction = fraction * 10 + d;
         ++digits;
       } // EDFlib truncates sub-tick fractional digits toward zero.
@@ -39,7 +39,7 @@ inline Tick ticks(std::string_view s, const char *field) {
   }
   if (!any || p != t.size())
     throw Error(std::string("Invalid ") + field);
-  while (digits++ < 7)
+  while (digits++ < std::chrono::hh_mm_ss<Tick>::fractional_width)
     fraction *= 10;
   if (whole > limit / ticks_per_second ||
       whole * ticks_per_second > limit - fraction)
@@ -56,10 +56,10 @@ inline std::string seconds(std::int64_t ticks, bool sign) {
   const auto n =
       negative ? std::uint64_t(-(ticks + 1)) + 1 : std::uint64_t(ticks);
   std::string out = negative ? "-" : (sign ? "+" : "");
-  out += std::to_string(n / 10000000);
-  auto frac = n % 10000000;
+  out += std::to_string(n / ticks_per_second);
+  auto frac = n % ticks_per_second;
   if (frac) {
-    auto s = std::to_string(frac + 10000000).substr(1);
+    auto s = std::to_string(frac + ticks_per_second).substr(1);
     while (s.back() == '0')
       s.pop_back();
     out += '.';

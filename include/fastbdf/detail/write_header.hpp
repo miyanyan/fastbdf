@@ -1,5 +1,7 @@
 #pragma once
 
+#include "edflib_limits.hpp"
+#include "header_layout.hpp"
 #include "time.hpp"
 #include <algorithm>
 #include <array>
@@ -102,15 +104,17 @@ inline WriteLayout prepare_layout(RecordingInfo &info, WriterOptions &options) {
       (info.format == Format::bdf || info.format == Format::bdf_plus) ? 3 : 2;
   layout.plus =
       info.format == Format::edf_plus || info.format == Format::bdf_plus;
-  const auto max_record_bytes = layout.sample_bytes * (5u * 1024u * 1024u);
+  const auto max_record_bytes =
+      layout.sample_bytes * edflib_limits::samples_per_record_limit;
   if ((info.signals.empty() && !layout.plus) || info.signals.size() > 4096)
     throw Error("invalid signal count");
   if (info.record_duration.count() < 0 ||
       (info.record_duration.count() == 0 &&
        (!layout.plus || !info.signals.empty())) ||
-      seconds(info.record_duration.count(), false).size() > 8)
+      seconds(info.record_duration.count(), false).size() >
+          fixed_header::record_duration.width)
     throw Error("invalid data record duration");
-  if (info.subsecond.count() < 0 || info.subsecond.count() >= 10000000 ||
+  if (info.subsecond.count() < 0 || info.subsecond >= std::chrono::seconds{1} ||
       (!layout.plus && info.subsecond.count() != 0))
     throw Error("invalid subsecond start");
   if (layout.plus &&
@@ -122,7 +126,9 @@ inline WriteLayout prepare_layout(RecordingInfo &info, WriterOptions &options) {
   if (!layout.plus)
     options.annotation_signals = 0;
   for (auto &s : info.signals) {
-    if (!s.samples_per_record || s.samples_per_record > 99999999)
+    if (!s.samples_per_record ||
+        s.samples_per_record >
+            max_decimal_count(signal_header::samples_per_record))
       throw Error("invalid samples per record");
     const auto lo = layout.sample_bytes == 2 ? -32768 : -8388608;
     const auto hi = layout.sample_bytes == 2 ? 32767 : 8388607;
@@ -173,7 +179,7 @@ inline WriteLayout prepare_layout(RecordingInfo &info, WriterOptions &options) {
   const auto ns = info.signals.size() + options.annotation_signals;
   if (ns > 4096)
     throw Error("More than 4096 signals including annotation channels");
-  layout.header_bytes = 256 * (ns + 1);
+  layout.header_bytes = header_size(ns);
   return layout;
 }
 
@@ -192,13 +198,12 @@ inline std::string encode_header(const RecordingInfo &info,
       s = '0' + s;
     return s;
   };
-  std::string h;
-  if (layout.sample_bytes == 3)
-    h = std::string("\xff"
-                    "BIOSEMI",
-                    8);
-  else
-    h = "0       ";
+  std::string h(layout.header_bytes, ' ');
+  h.replace(fixed_header::version.offset, fixed_header::version.width,
+            layout.sample_bytes == 3 ? bdf_version : edf_version);
+  auto put = [&](HeaderField spec, std::string value) {
+    h.replace(spec.offset, spec.width, field(std::move(value), spec.width));
+  };
   std::string patient = info.patient, recording = info.recording;
   if (layout.plus) {
     if (!info.sex.empty() && info.sex != "M" && info.sex != "F" &&
@@ -217,15 +222,19 @@ inline std::string encode_header(const RecordingInfo &info,
     if (!info.recording_additional.empty())
       recording += ' ' + info.recording_additional;
   }
-  h += field(patient, 80) + field(recording, 80) + field(date(ymd, false), 8);
-  h += field(pad(tod.hours().count()) + '.' + pad(tod.minutes().count()) + '.' +
-                 pad(tod.seconds().count()),
-             8);
-  h += field(std::to_string(layout.header_bytes), 8) +
-       field(layout.plus ? (layout.sample_bytes == 3 ? "BDF+C" : "EDF+C") : "",
-             44);
-  h += field("-1", 8) + field(seconds(info.record_duration.count(), false), 8) +
-       field(std::to_string(ns), 4);
+  put(fixed_header::patient, patient);
+  put(fixed_header::recording, recording);
+  put(fixed_header::start_date, date(ymd, false));
+  put(fixed_header::start_time, pad(tod.hours().count()) + '.' +
+                                    pad(tod.minutes().count()) + '.' +
+                                    pad(tod.seconds().count()));
+  put(fixed_header::header_bytes, std::to_string(layout.header_bytes));
+  put(fixed_header::reserved,
+      layout.plus ? (layout.sample_bytes == 3 ? "BDF+C" : "EDF+C") : "");
+  put(fixed_header::record_count, "-1");
+  put(fixed_header::record_duration,
+      seconds(info.record_duration.count(), false));
+  put(fixed_header::signal_count, std::to_string(ns));
   std::vector<SignalSpec> specs = info.signals;
   for (std::size_t i = 0; i < options.annotation_signals; ++i) {
     SignalSpec s{};
@@ -240,20 +249,25 @@ inline std::string encode_header(const RecordingInfo &info,
                      static_cast<std::ptrdiff_t>(layout.annotation_index + i),
                  std::move(s));
   }
-  auto fields = [&](std::size_t width, auto get) {
-    for (const auto &s : specs)
-      h += field(get(s), width);
+  auto fields = [&](HeaderField spec, auto get) {
+    for (std::size_t i = 0; i < specs.size(); ++i)
+      h.replace(fixed_header::size + spec.column_offset(ns, i), spec.width,
+                field(get(specs[i]), spec.width));
   };
-  fields(16, [](const auto &s) { return s.label; });
-  fields(80, [](const auto &s) { return s.transducer; });
-  fields(8, [](const auto &s) { return s.unit; });
-  fields(8, [](const auto &s) { return decimal(s.physical_min); });
-  fields(8, [](const auto &s) { return decimal(s.physical_max); });
-  fields(8, [](const auto &s) { return std::to_string(s.digital_min); });
-  fields(8, [](const auto &s) { return std::to_string(s.digital_max); });
-  fields(80, [](const auto &s) { return s.prefilter; });
-  fields(8, [](const auto &s) { return std::to_string(s.samples_per_record); });
-  fields(32, [](const auto &) { return std::string{}; });
+  fields(signal_header::label, [](const auto &s) { return s.label; });
+  fields(signal_header::transducer, [](const auto &s) { return s.transducer; });
+  fields(signal_header::unit, [](const auto &s) { return s.unit; });
+  fields(signal_header::physical_min,
+         [](const auto &s) { return decimal(s.physical_min); });
+  fields(signal_header::physical_max,
+         [](const auto &s) { return decimal(s.physical_max); });
+  fields(signal_header::digital_min,
+         [](const auto &s) { return std::to_string(s.digital_min); });
+  fields(signal_header::digital_max,
+         [](const auto &s) { return std::to_string(s.digital_max); });
+  fields(signal_header::prefilter, [](const auto &s) { return s.prefilter; });
+  fields(signal_header::samples_per_record,
+         [](const auto &s) { return std::to_string(s.samples_per_record); });
   return h;
 }
 

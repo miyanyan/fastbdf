@@ -1,6 +1,8 @@
 #pragma once
 
+#include "edflib_limits.hpp"
 #include "file_source.hpp"
+#include "header_layout.hpp"
 #include "time.hpp"
 #include <algorithm>
 #include <array>
@@ -151,21 +153,20 @@ inline void parse_identification(RecordingInfo &info) {
 
 inline ReadHeader read_header(const FileSource &file) {
   ReadHeader header;
-  std::array<char, 256> fixed{};
+  std::array<char, fixed_header::size> fixed{};
   file.read_at(0, fixed);
   std::string_view f(fixed.data(), fixed.size());
-  const bool bdf =
-      static_cast<unsigned char>(f[0]) == 0xff && f.substr(1, 7) == "BIOSEMI";
-  if (!bdf && f.substr(0, 8) != "0       ")
+  const bool bdf = fixed_header::version.read(f) == bdf_version;
+  if (!bdf && fixed_header::version.read(f) != edf_version)
     throw Error("Unsupported EDF/BDF version");
   header.width = bdf ? 3 : 2;
-  for (std::size_t i = 8; i < f.size(); ++i)
+  for (std::size_t i = fixed_header::version.end(); i < f.size(); ++i)
     if (static_cast<unsigned char>(f[i]) < 32 ||
         static_cast<unsigned char>(f[i]) > 126)
       throw Error("Non-ASCII EDF/BDF header");
-  header.info.patient = trim(f.substr(8, 80));
-  header.info.recording = trim(f.substr(88, 80));
-  const auto reserved = trim(f.substr(192, 44));
+  header.info.patient = trim(fixed_header::patient.read(f));
+  header.info.recording = trim(fixed_header::recording.read(f));
+  const auto reserved = trim(fixed_header::reserved.read(f));
   const auto plus = reserved.starts_with(bdf ? "BDF+" : "EDF+");
   if (plus && !(reserved.starts_with(bdf ? "BDF+C" : "EDF+C") ||
                 reserved.starts_with(bdf ? "BDF+D" : "EDF+D")))
@@ -173,7 +174,8 @@ inline ReadHeader read_header(const FileSource &file) {
   header.discontinuous = plus && reserved[4] == 'D';
   header.info.format = bdf ? (plus ? Format::bdf_plus : Format::bdf)
                            : (plus ? Format::edf_plus : Format::edf);
-  auto date = f.substr(168, 8), time = f.substr(176, 8);
+  auto date = fixed_header::start_date.read(f),
+       time = fixed_header::start_time.read(f);
   if (date[2] != '.' || date[5] != '.' || time[2] != '.' || time[5] != '.')
     throw Error("Invalid start date/time");
   auto y = integer(date.substr(6, 2), "year");
@@ -190,38 +192,45 @@ inline ReadHeader read_header(const FileSource &file) {
     throw Error("Invalid start date/time");
   header.info.start = std::chrono::local_days{d} + std::chrono::hours{hh} +
                       std::chrono::minutes{mm} + std::chrono::seconds{ss};
-  auto ns = integer(f.substr(252, 4), "signal count");
+  auto ns = integer(fixed_header::signal_count.read(f), "signal count");
   if (ns <= 0 || ns > 4096)
     throw Error("Invalid signal count");
-  auto hb = integer(f.substr(184, 8), "header length");
-  if (hb != 256 + 256 * ns)
+  auto hb = integer(fixed_header::header_bytes.read(f), "header length");
+  if (hb < 0 || static_cast<std::uint64_t>(hb) !=
+                    header_size(static_cast<std::size_t>(ns)))
     throw Error("Invalid header length");
   header.header_bytes = static_cast<std::uint64_t>(hb);
-  const auto declared = integer(f.substr(236, 8), "record count");
+  const auto declared =
+      integer(fixed_header::record_count.read(f), "record count");
   if (declared < -1)
     throw Error("Invalid record count");
-  header.info.record_duration = ticks(f.substr(244, 8), "record duration");
+  header.info.record_duration =
+      ticks(fixed_header::record_duration.read(f), "record duration");
   if (header.info.record_duration.count() < 0)
     throw Error("Record duration must be nonnegative");
-  std::vector<char> raw(static_cast<std::size_t>(ns) * 256);
-  file.read_at(256, raw);
+  std::vector<char> raw(static_cast<std::size_t>(ns) * signal_header::size);
+  file.read_at(fixed_header::size, raw);
   for (char c : raw)
     if (static_cast<unsigned char>(c) < 32 ||
         static_cast<unsigned char>(c) > 126)
       throw Error("Non-ASCII signal header");
-  auto field = [&](std::size_t offset, std::size_t length, std::size_t i) {
-    return std::string_view(raw.data() + offset * ns + length * i, length);
+  auto field = [&](HeaderField spec, std::size_t i) {
+    return std::string_view(
+        raw.data() + spec.column_offset(static_cast<std::size_t>(ns), i),
+        spec.width);
   };
   for (std::size_t i = 0; i < static_cast<std::size_t>(ns); ++i) {
     Channel c;
     auto &s = c.spec;
-    s.label = trim(field(0, 16, i));
-    s.transducer = trim(field(16, 80, i));
-    s.unit = trim(field(96, 8, i));
-    s.physical_min = number(field(104, 8, i), "physical minimum");
-    s.physical_max = number(field(112, 8, i), "physical maximum");
-    auto mn = integer(field(120, 8, i), "digital minimum"),
-         mx = integer(field(128, 8, i), "digital maximum");
+    s.label = trim(field(signal_header::label, i));
+    s.transducer = trim(field(signal_header::transducer, i));
+    s.unit = trim(field(signal_header::unit, i));
+    s.physical_min =
+        number(field(signal_header::physical_min, i), "physical minimum");
+    s.physical_max =
+        number(field(signal_header::physical_max, i), "physical maximum");
+    auto mn = integer(field(signal_header::digital_min, i), "digital minimum"),
+         mx = integer(field(signal_header::digital_max, i), "digital maximum");
     auto limit = bdf ? 8388608 : 32768;
     if (mn < -limit || mx >= limit || mn >= mx)
       throw Error("Invalid digital range");
@@ -229,8 +238,9 @@ inline ReadHeader read_header(const FileSource &file) {
     s.digital_max = static_cast<std::int32_t>(mx);
     if (s.physical_min == s.physical_max)
       throw Error("Invalid physical range");
-    s.prefilter = trim(field(136, 80, i));
-    auto samples = integer(field(216, 8, i), "samples per record");
+    s.prefilter = trim(field(signal_header::prefilter, i));
+    auto samples = integer(field(signal_header::samples_per_record, i),
+                           "samples per record");
     if (samples <= 0 || samples > (std::numeric_limits<std::uint32_t>::max)())
       throw Error("Invalid samples per record");
     s.samples_per_record = static_cast<std::uint32_t>(samples);
@@ -248,7 +258,8 @@ inline ReadHeader read_header(const FileSource &file) {
   if (header.info.record_duration.count() == 0 &&
       (!plus || !header.data_channels.empty()))
     throw Error("Zero duration requires annotation-only EDF+");
-  if (header.record_bytes > header.width * (5u * 1024u * 1024u))
+  if (header.record_bytes >
+      header.width * edflib_limits::samples_per_record_limit)
     throw Error("Data record exceeds the EDFlib size limit");
   const auto size = file.size();
   if (size < header.header_bytes ||

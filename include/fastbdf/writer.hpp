@@ -76,11 +76,13 @@ public:
     if (annotation.duration && annotation.duration->count() < 0)
       fail("negative annotation duration");
     if (annotation.duration &&
-        detail::seconds(annotation.duration->count(), false).size() > 15)
+        detail::seconds(annotation.duration->count(), false).size() >
+            detail::edflib_limits::duration_text_chars)
       fail("annotation duration exceeds the EDFlib precision limit");
     // Match EDFlib 1.27's byte-oriented description buffer.
     auto &text = annotation.text;
-    text.resize(std::min<std::size_t>(text.size(), 40));
+    text.resize(std::min(text.size(),
+                         detail::edflib_limits::written_description_bytes));
     if (auto end = text.find('\0'); end != text.npos)
       text.resize(end);
     for (char &c : text)
@@ -164,9 +166,11 @@ public:
         output_.write(block.data(), static_cast<std::streamsize>(block.size()));
       }
     }
-    output_.seekp(236);
-    const auto count = detail::field(std::to_string(records_), 8);
-    output_.write(count.data(), 8);
+    constexpr auto record_count = detail::fixed_header::record_count;
+    output_.seekp(record_count.offset);
+    const auto count =
+        detail::field(std::to_string(records_), record_count.width);
+    output_.write(count.data(), static_cast<std::streamsize>(count.size()));
     output_.flush();
     check_io();
     output_.close();
@@ -229,7 +233,8 @@ private:
     }
   }
   void emit_record(const char *data) {
-    if (records_ >= 99999999)
+    if (records_ >=
+        detail::max_decimal_count(detail::fixed_header::record_count))
       fail("EDF record count exceeds eight digits");
     auto block =
         layout_.plus ? detail::timekeeping(info_, records_) : std::string{};

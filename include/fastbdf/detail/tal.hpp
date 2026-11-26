@@ -1,5 +1,6 @@
 #pragma once
 
+#include "edflib_limits.hpp"
 #include "time.hpp"
 #include <algorithm>
 #include <limits>
@@ -21,7 +22,9 @@ inline Tick tal_time(std::string_view text, bool is_duration) {
     throw Error("Invalid TAL time");
   // EDFlib 1.27 validates the full duration, then copies 15 characters
   // before converting it to ticks. Onsets use the complete spelling.
-  return ticks(is_duration ? text.substr(0, 15) : text, "TAL time");
+  return ticks(is_duration ? text.substr(0, edflib_limits::duration_text_chars)
+                           : text,
+               "TAL time");
 }
 
 // TAL bytes are stored consecutively, including all bytes of 16/24 bit words.
@@ -77,7 +80,8 @@ inline bool parse_tals(std::span<const char> bytes, bool first_channel,
         throw Error("Unterminated annotation text");
       if (mode != AnnotationMode::none) {
         // EDFlib exposes and checks the first 512 description bytes.
-        auto text = tal.substr(q + 1, std::min<std::size_t>(e - q - 1, 512));
+        auto text = tal.substr(
+            q + 1, std::min(e - q - 1, edflib_limits::read_description_bytes));
         if (!std::all_of(text.begin(), text.end(), [](unsigned char c) {
               return (c >= 32 && c != 127) || c == '\t' || c == '\n' ||
                      c == '\r';
